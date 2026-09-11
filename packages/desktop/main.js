@@ -1,3 +1,20 @@
+/*
+ * Prompt Optimizer - AI提示词优化工具
+ * Copyright (C) 2025 linshenkx
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 // 在所有其他模块之前初始化日志系统
 const ConsoleLogger = require('./config/console-logger');
 const consoleLogger = new ConsoleLogger();
@@ -5,15 +22,33 @@ const consoleLogger = new ConsoleLogger();
 // 立即设置全局错误处理器，确保任何异常都能被记录
 consoleLogger.setupGlobalErrorHandlers();
 
-const { app, BrowserWindow, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, Menu, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const {
   buildReleaseUrl,
+  resolveUpdateRepositoryConfig,
   validateVersion,
   IPC_EVENTS,
   PREFERENCE_KEYS,
   DEFAULT_CONFIG
 } = require('./config/update-config');
+const {
+  createManualUpdateRequiredError,
+  getUpdateDeliveryPolicy,
+  isManualReleaseDelivery,
+} = require('./config/update-delivery-policy');
+const { createGlobalDispatcherFromProxyDecision } = require('./config/proxy-dispatcher');
+const {
+  buildAppMenuTemplate,
+  getPageZoomShortcutAction,
+} = require('./config/app-menu');
+const {
+  DEFAULT_PAGE_ZOOM_LEVEL,
+  VISUAL_ZOOM_LIMITS,
+  applyPageZoomAction,
+  getPageZoomActionFromDirection,
+} = require('./config/page-zoom');
+const { setupRemoteStorageHandlers } = require('./remote-storage');
 const path = require('path');
 
 // 确定正确的配置文件路径
@@ -41,13 +76,17 @@ const {
   createHistoryManager,
   createLLMService,
   createPromptService,
+  createImageUnderstandingService,
   createImageModelManager,
   createImageAdapterRegistry,
   createImageService,
   createTemplateLanguageService,
   createDataManager,
   createContextRepo,
+  FavoriteManager,
   FileStorageProvider,
+  runStorageStartupSafetyCheck,
+  writeStartupRepairReport,
   // 导入共享的环境变量扫描常量
   CUSTOM_API_PATTERN,
   SUFFIX_PATTERN,
@@ -80,11 +119,107 @@ function safeSerialize(obj) {
   }
 }
 
+async function convertImageInputWithElectronNativeImage(input) {
+  try {
+    if (!input || typeof input.b64 !== 'string' || !input.b64.trim()) {
+      return null;
+    }
+
+    const mimeType = typeof input.mimeType === 'string' && input.mimeType.trim()
+      ? input.mimeType.trim()
+      : 'application/octet-stream';
+    const source = input.b64.startsWith('data:')
+      ? input.b64
+      : `data:${mimeType};base64,${input.b64}`;
+    const image = nativeImage.createFromDataURL(source);
+    if (image.isEmpty()) {
+      return null;
+    }
+
+    const pngBuffer = image.toPNG();
+    if (!pngBuffer || pngBuffer.length === 0) {
+      return null;
+    }
+
+    return {
+      b64: pngBuffer.toString('base64'),
+      mimeType: 'image/png'
+    };
+  } catch {
+    return null;
+  }
+}
+
 let mainWindow;
-let modelManager, templateManager, historyManager, llmService, promptService, templateLanguageService, preferenceService, dataManager, contextRepo;
-let imageModelManager, imageService;
+let modelManager, templateManager, historyManager, llmService, promptService, templateLanguageService, preferenceService, dataManager, contextRepo, favoriteManager;
+let imageModelManager, imageService, imageUnderstandingService;
 let imageAdapterRegistry; // 全局引用以供 IPC 处理器使用
 let storageProvider; // 全局存储提供器引用，用于退出时保存数据
+
+// UI 当前语言（由渲染进程 i18n 选择决定）。
+// 说明：Electron 默认不会为输入框提供浏览器那种右键编辑菜单，
+// 我们在主进程中自行弹出菜单，并用该 locale 来决定菜单文案。
+let uiLocale = null;
+
+const SUPPORTED_UI_LOCALES = new Set(['zh-CN', 'zh-TW', 'en-US']);
+
+function normalizeUiLocale(locale) {
+  if (typeof locale !== 'string' || !locale) return null;
+  if (SUPPORTED_UI_LOCALES.has(locale)) return locale;
+
+  const lower = locale.toLowerCase();
+  if (lower.startsWith('zh')) {
+    // Covers: zh-TW / zh-HK / zh-Hant, etc.
+    if (lower.includes('tw') || lower.includes('hk') || lower.includes('hant')) return 'zh-TW';
+    return 'zh-CN';
+  }
+  if (lower.startsWith('en')) return 'en-US';
+  return null;
+}
+
+function getCurrentUiLocale() {
+  const fromUi = normalizeUiLocale(uiLocale);
+  if (fromUi) return fromUi;
+
+  try {
+    const fromSystem = typeof app.getLocale === 'function' ? app.getLocale() : null;
+    return normalizeUiLocale(fromSystem) || 'en-US';
+  } catch (_e) {
+    return 'en-US';
+  }
+}
+
+const CONTEXT_MENU_LABELS = {
+  'zh-CN': {
+    undo: '撤销',
+    redo: '重做',
+    cut: '剪切',
+    copy: '复制',
+    paste: '粘贴',
+    selectAll: '全选',
+  },
+  'zh-TW': {
+    undo: '復原',
+    redo: '重做',
+    cut: '剪下',
+    copy: '複製',
+    paste: '貼上',
+    selectAll: '全選',
+  },
+  'en-US': {
+    undo: 'Undo',
+    redo: 'Redo',
+    cut: 'Cut',
+    copy: 'Copy',
+    paste: 'Paste',
+    selectAll: 'Select All',
+  },
+};
+
+function getContextMenuLabels(locale) {
+  const normalized = normalizeUiLocale(locale) || 'en-US';
+  return CONTEXT_MENU_LABELS[normalized] || CONTEXT_MENU_LABELS['en-US'];
+}
 let isQuitting = false; // 防止重复保存数据的标志
 let isUpdaterQuitting = false; // 标识是否为更新安装退出，跳过数据保存
 let forceQuitTimer = null; // 强制退出定时器
@@ -145,31 +280,22 @@ async function setupGlobalProxyDispatcherFromSystem() {
 
   // 将代理决策映射为 undici 的代理 URL
   // 支持：PROXY/HTTPS/SOCKS/SOCKS5/DIRECT
-  let dispatcher;
   let mappedProxyUrl = 'DIRECT';
   try {
-    if (proxyDecision.startsWith('PROXY ') || proxyDecision.startsWith('HTTPS ')) {
-      const hostPort = proxyDecision.split(' ')[1]; // host:port
-      mappedProxyUrl = `http://${hostPort}`;
-      dispatcher = new ProxyAgent(mappedProxyUrl);
-    } else if (proxyDecision.startsWith('SOCKS5 ')) {
-      const hostPort = proxyDecision.split(' ')[1];
-      mappedProxyUrl = `socks5://${hostPort}`;
-      dispatcher = new ProxyAgent(mappedProxyUrl);
-    } else if (proxyDecision.startsWith('SOCKS ')) {
-      const hostPort = proxyDecision.split(' ')[1];
-      mappedProxyUrl = `socks://${hostPort}`;
-      dispatcher = new ProxyAgent(mappedProxyUrl);
-    } else {
-      // DIRECT 或未知，使用默认直连 Agent
-      dispatcher = new Agent();
-    }
-
+    const { dispatcher, mappedProxyUrl: resolvedProxyUrl } = createGlobalDispatcherFromProxyDecision({
+      Agent,
+      ProxyAgent,
+      proxyDecision
+    });
+    mappedProxyUrl = resolvedProxyUrl;
     setGlobalDispatcher(dispatcher);
     // 基础日志（始终输出）
     console.log('[Proxy] 系统代理解析结果(raw):', rawResolve);
     console.log('[Proxy] 选用决策(decision):', proxyDecision);
     console.log('[Proxy] undici 全局代理:', mappedProxyUrl);
+    if (mappedProxyUrl !== 'DIRECT') {
+      console.log('[Proxy] localhost / 局域网 / 私网地址将绕过代理直连');
+    }
 
     // 诊断信息（仅在环境变量开启时输出）
     const debug = process.env.DEBUG_PROXY === '1' || process.env.PROXY_DEBUG === '1';
@@ -217,6 +343,33 @@ function setupPreferenceHandlers() {
     }
   });
 
+  ipcMain.handle('preference-delete', async (event, key) => {
+    try {
+      await preferenceService.delete(key);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('preference-keys', async () => {
+    try {
+      const result = await preferenceService.keys();
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('preference-clear', async () => {
+    try {
+      await preferenceService.clear();
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
   ipcMain.handle('preference-getAll', async (event) => {
     try {
       const result = await preferenceService.getAll();
@@ -249,7 +402,7 @@ function setupPreferenceHandlers() {
 
   ipcMain.handle('preference-getDataType', async (event) => {
     try {
-      const result = preferenceService.getDataType();
+      const result = await preferenceService.getDataType();
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -328,6 +481,79 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
+  });
+
+  const handlePageZoomAction = (action, targetWebContents = mainWindow?.webContents) => {
+    applyPageZoomAction(targetWebContents, action);
+  };
+
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildAppMenuTemplate({
+        isMac: process.platform === 'darwin',
+        onPageZoomAction: handlePageZoomAction,
+      })
+    )
+  );
+  mainWindow.webContents.setZoomLevel(DEFAULT_PAGE_ZOOM_LEVEL);
+  void mainWindow.webContents
+    .setVisualZoomLevelLimits(VISUAL_ZOOM_LIMITS.minimum, VISUAL_ZOOM_LIMITS.maximum)
+    .catch((error) => {
+      console.warn('[Main Process] Failed to keep visual zoom locked:', error);
+    });
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const action = getPageZoomShortcutAction(input);
+    if (!action) return;
+
+    event.preventDefault();
+    handlePageZoomAction(action);
+  });
+
+  // Keep pinch zoom disabled so keyboard/menu reset stays authoritative.
+  // Wheel-based page zoom still arrives through Electron's zoom-changed event.
+  mainWindow.webContents.on('zoom-changed', (_event, zoomDirection) => {
+    const action = getPageZoomActionFromDirection(zoomDirection);
+    if (!action) return;
+    handlePageZoomAction(action);
+  });
+
+  // Enable native-like context menu for text inputs (cut/copy/paste/selectAll).
+  // Electron doesn't provide this by default, which makes right-click paste
+  // unavailable on Windows.
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    const isEditable = Boolean(params.isEditable);
+    const selectionText = typeof params.selectionText === 'string' ? params.selectionText : '';
+    const hasSelection = selectionText.trim().length > 0;
+
+    const labels = getContextMenuLabels(getCurrentUiLocale());
+
+    // Avoid showing an empty menu on right-click.
+    if (!isEditable && !hasSelection) return;
+
+    const editFlags = params.editFlags || {};
+
+    const template = isEditable
+      ? [
+          { label: labels.undo, role: 'undo', enabled: Boolean(editFlags.canUndo) },
+          { label: labels.redo, role: 'redo', enabled: Boolean(editFlags.canRedo) },
+          { type: 'separator' },
+          { label: labels.cut, role: 'cut', enabled: Boolean(editFlags.canCut) },
+          { label: labels.copy, role: 'copy', enabled: Boolean(editFlags.canCopy) },
+          { label: labels.paste, role: 'paste', enabled: Boolean(editFlags.canPaste) },
+          { type: 'separator' },
+          { label: labels.selectAll, role: 'selectAll', enabled: Boolean(editFlags.canSelectAll) },
+        ]
+      : [
+          { label: labels.copy, role: 'copy', enabled: hasSelection },
+          { type: 'separator' },
+          { label: labels.selectAll, role: 'selectAll' },
+        ];
+
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: mainWindow, x: params.x, y: params.y });
   });
 
   // In development, we can point to the vite dev server
@@ -416,12 +642,18 @@ async function initializeServices() {
     const staticEnvVars = [
       'VITE_OPENAI_API_KEY',
       'VITE_GEMINI_API_KEY',
+      'VITE_ANTHROPIC_API_KEY',
       'VITE_DEEPSEEK_API_KEY',
       'VITE_SILICONFLOW_API_KEY',
       'VITE_ZHIPU_API_KEY',
+      'VITE_DASHSCOPE_API_KEY',
+      'VITE_OPENROUTER_API_KEY',
+      'VITE_MODELSCOPE_API_KEY',
       'VITE_CUSTOM_API_KEY',
       'VITE_CUSTOM_API_BASE_URL',
-      'VITE_CUSTOM_API_MODEL'
+      'VITE_CUSTOM_API_MODEL',
+      'VITE_CUSTOM_API_PARAMS',
+      'VITE_CUSTOM_API_HEADERS'
     ];
 
     // 扫描动态自定义模型环境变量
@@ -467,6 +699,8 @@ async function initializeServices() {
     const userDataPath = app.getPath('userData');
     console.log('[DESKTOP] Using standard user data directory for auto-update compatibility:', userDataPath);
     storageProvider = new FileStorageProvider(userDataPath);
+    const startupRepairReport = await runStorageStartupSafetyCheck(storageProvider);
+    await writeStartupRepairReport(storageProvider, startupRepairReport);
     
     await initializePreferenceService(storageProvider);
     
@@ -499,16 +733,32 @@ async function initializeServices() {
     console.log('[DESKTOP] Creating LLM service...');
     llmService = createLLMService(modelManager);
 
+    console.log('[DESKTOP] Creating image understanding service...');
+    imageUnderstandingService = createImageUnderstandingService({
+      imageInputConverter: convertImageInputWithElectronNativeImage,
+    });
+
     console.log('[DESKTOP] Creating Prompt service...');
-    promptService = createPromptService(modelManager, llmService, templateManager, historyManager);
+    promptService = createPromptService(
+      modelManager,
+      llmService,
+      templateManager,
+      historyManager,
+      imageUnderstandingService,
+    );
     console.log('[DESKTOP] Creating Image service...');
-    imageService = createImageService(imageModelManager, imageAdapterRegistry);
+    imageService = createImageService(imageModelManager, imageAdapterRegistry, {
+      imageInputConverter: convertImageInputWithElectronNativeImage,
+    });
     
     console.log('[DESKTOP] Creating Context repository...');
     contextRepo = createContextRepo(storageProvider);
 
     console.log('[DESKTOP] Creating Data manager...');
-    dataManager = createDataManager(modelManager, templateManager, historyManager, preferenceService, contextRepo);
+    dataManager = createDataManager(modelManager, templateManager, historyManager, preferenceService, contextRepo, imageModelManager);
+
+    console.log('[DESKTOP] Creating Favorite manager...');
+    favoriteManager = new FavoriteManager(storageProvider);
     
     console.log('[Main Process] Core services initialized successfully.');
     
@@ -527,9 +777,37 @@ function createSuccessResponse(data) {
 
 function createErrorResponse(error) {
   console.error('[Main Process IPC Error]', error);
-  // 对于非 Error 实例，包装一下
-  const errorMessage = error instanceof Error ? error.message : String(error);
-  return { success: false, error: errorMessage };
+  // Always return a structured error payload so renderer can translate via `code + params`.
+  // This is safe even for legacy callers because preload normalizes both string/object.
+  return { success: false, error: normalizeIpcError(error) };
+}
+
+// Structured error payload for renderer-side i18n (code + params).
+function normalizeIpcError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  const payload = { message };
+
+  if (error && typeof error === 'object') {
+    if (typeof error.code === 'string') {
+      payload.code = error.code;
+    }
+
+    if (error.params && typeof error.params === 'object') {
+      try {
+        payload.params = safeSerialize(error.params);
+      } catch (_) {
+        // Best-effort only; omit params if serialization fails.
+      }
+    }
+  }
+
+  return payload;
+}
+
+function createStructuredErrorResponse(error) {
+  // Backward-compat: keep the helper name used by newer handlers.
+  return createErrorResponse(error)
 }
 
 // 创建详细的错误响应，确保100%信息保真
@@ -598,10 +876,45 @@ function createDetailedErrorResponse(error) {
   return { success: false, error: detailedMessage };
 }
 
+function formatFavoriteError(error) {
+  if (!error || typeof error !== 'object') {
+    return { message: String(error || 'Unknown error'), code: 'UNKNOWN_ERROR' };
+  }
+
+  const formatted = {
+    message: error.message || 'Unknown error',
+    code: error.code || 'UNKNOWN_ERROR',
+    name: error.name || 'Error'
+  };
+
+  if (error.details) {
+    formatted.details = error.details;
+  }
+
+  if (error.cause) {
+    formatted.cause = {
+      message: error.cause.message || String(error.cause),
+      code: error.cause.code,
+      name: error.cause.name
+    };
+  }
+
+  return formatted;
+}
+
+function createFavoriteErrorResponse(error) {
+  console.error('[Favorite IPC Error]', error);
+  return { success: false, error: formatFavoriteError(error) };
+}
+
 // --- High-Level IPC Service Handlers ---
 function setupIPC() {
   console.log('[Main Process] Setting up high-level service IPC handlers...');
   setupPreferenceHandlers();
+  setupRemoteStorageHandlers(ipcMain, {
+    createSuccessResponse,
+    createErrorResponse,
+  });
   
   // LLM Service handlers
   ipcMain.handle('llm-testConnection', async (event, provider) => {
@@ -640,21 +953,31 @@ function setupIPC() {
     }
   });
 
+  ipcMain.handle('image-understanding-understand', async (event, request) => {
+    try {
+      const result = await imageUnderstandingService.understand(safeSerialize(request));
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
   // Streaming handler - more complex due to callbacks
   ipcMain.handle('llm-sendMessageStream', async (event, messages, provider, streamId) => {
     try {
+      // 使用符合 StreamHandlers 接口的回调名称
       const callbacks = {
-        onContent: (content) => {
+        onToken: (token) => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            event.sender.send(`stream-content-${streamId}`, content);
+            event.sender.send(`stream-content-${streamId}`, token);
           }
         },
-        onThinking: (thinking) => {
+        onReasoningToken: (thinking) => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             event.sender.send(`stream-thinking-${streamId}`, thinking);
           }
         },
-        onFinish: () => {
+        onComplete: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             event.sender.send(`stream-finish-${streamId}`);
           }
@@ -665,8 +988,46 @@ function setupIPC() {
           }
         }
       };
-      
+
       await llmService.sendMessageStream(messages, provider, callbacks);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  // Streaming handler with tools - supports tool-call events
+  ipcMain.handle('llm-sendMessageStreamWithTools', async (event, messages, provider, tools, streamId) => {
+    try {
+      const callbacks = {
+        onToken: (token) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            event.sender.send(`stream-content-${streamId}`, token);
+          }
+        },
+        onReasoningToken: (thinking) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            event.sender.send(`stream-thinking-${streamId}`, thinking);
+          }
+        },
+        onToolCall: (toolCall) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            event.sender.send(`stream-tool-call-${streamId}`, toolCall);
+          }
+        },
+        onComplete: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            event.sender.send(`stream-finish-${streamId}`);
+          }
+        },
+        onError: (error) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            event.sender.send(`stream-error-${streamId}`, error.message);
+          }
+        }
+      };
+
+      await llmService.sendMessageStreamWithTools(messages, provider, tools, callbacks);
       return createSuccessResponse(null);
     } catch (error) {
       return createErrorResponse(error);
@@ -683,18 +1044,27 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('prompt-iteratePrompt', async (event, originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId) => {
+  ipcMain.handle('prompt-optimizeMessage', async (event, request) => {
     try {
-      const result = await promptService.iteratePrompt(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId);
+      const result = await promptService.optimizeMessage(request);
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
     }
   });
 
-  ipcMain.handle('prompt-testPrompt', async (event, systemPrompt, userPrompt, modelKey) => {
+  ipcMain.handle('prompt-iteratePrompt', async (event, originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, contextData) => {
     try {
-      const result = await promptService.testPrompt(systemPrompt, userPrompt, modelKey);
+      const result = await promptService.iteratePrompt(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, contextData);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('prompt-testPrompt', async (event, systemPrompt, userPrompt, modelKey, inputImages) => {
+    try {
+      const result = await promptService.testPrompt(systemPrompt, userPrompt, modelKey, inputImages);
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -760,10 +1130,10 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('prompt-iteratePromptStream', async (event, originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, streamId) => {
+  ipcMain.handle('prompt-optimizeMessageStream', async (event, request, streamId) => {
     const streamHandlers = createIpcStreamHandlers(mainWindow, streamId);
     try {
-      await promptService.iteratePromptStream(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, streamHandlers, templateId);
+      await promptService.optimizeMessageStream(request, streamHandlers);
       return createSuccessResponse(null);
     } catch (error) {
       streamHandlers.onError(error);
@@ -771,10 +1141,21 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('prompt-testPromptStream', async (event, systemPrompt, userPrompt, modelKey, streamId) => {
+  ipcMain.handle('prompt-iteratePromptStream', async (event, originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, streamId, contextData) => {
     const streamHandlers = createIpcStreamHandlers(mainWindow, streamId);
     try {
-      await promptService.testPromptStream(systemPrompt, userPrompt, modelKey, streamHandlers);
+      await promptService.iteratePromptStream(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, streamHandlers, templateId, contextData);
+      return createSuccessResponse(null);
+    } catch (error) {
+      streamHandlers.onError(error);
+      return createErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('prompt-testPromptStream', async (event, systemPrompt, userPrompt, modelKey, streamId, inputImages) => {
+    const streamHandlers = createIpcStreamHandlers(mainWindow, streamId);
+    try {
+      await promptService.testPromptStream(systemPrompt, userPrompt, modelKey, streamHandlers, inputImages);
       return createSuccessResponse(null);
     } catch (error) {
       streamHandlers.onError(error);
@@ -959,16 +1340,78 @@ function setupIPC() {
       const res = await imageService.generate(safeReq)
       return createSuccessResponse(res)
     } catch (error) {
-      return createErrorResponse(error)
+      return createStructuredErrorResponse(error)
     }
   })
+
+  // 显式模式：避免根据 inputImage 是否存在隐式推断
+  ipcMain.handle('image-generateText2Image', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.generateText2Image(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
+    }
+  })
+
+  ipcMain.handle('image-generateImage2Image', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.generateImage2Image(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
+    }
+  })
+
+  ipcMain.handle('image-generateMultiImage', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.generateMultiImage(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
+    }
+  })
+
   ipcMain.handle('image-validateRequest', async (e, request) => {
     try {
       const safeReq = safeSerialize(request)
       const res = await imageService.validateRequest(safeReq)
       return createSuccessResponse(res)
     } catch (error) {
-      return createErrorResponse(error)
+      return createStructuredErrorResponse(error)
+    }
+  })
+
+  ipcMain.handle('image-validateText2ImageRequest', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.validateText2ImageRequest(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
+    }
+  })
+
+  ipcMain.handle('image-validateImage2ImageRequest', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.validateImage2ImageRequest(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
+    }
+  })
+
+  ipcMain.handle('image-validateMultiImageRequest', async (e, request) => {
+    try {
+      const safeReq = safeSerialize(request)
+      const res = await imageService.validateMultiImageRequest(safeReq)
+      return createSuccessResponse(res)
+    } catch (error) {
+      return createStructuredErrorResponse(error)
     }
   })
 
@@ -976,21 +1419,13 @@ function setupIPC() {
   ipcMain.handle('image-testConnection', async (e, config) => {
     try {
       const safeCfg = safeSerialize(config)
-      const adapter = imageAdapterRegistry.getAdapter(safeCfg.providerId)
-      const model = safeCfg.model
-      // 选择测试类型
-      let testType = 'text2image'
-      const caps = model?.capabilities || {}
-      if (caps.text2image && !caps.image2image) testType = 'text2image'
-      else if (!caps.text2image && caps.image2image) testType = 'image2image'
-      else if (caps.text2image && caps.image2image) testType = 'text2image'
-      // 构建测试请求（适配器提供）
-      const baseReq = (adapter).getTestImageRequest ? (adapter).getTestImageRequest(testType) : { prompt: 'hello', count: 1 }
-      const request = { ...baseReq, configId: safeCfg.id || 'test' }
-      const result = await adapter.generate(request, safeCfg)
+      // Reuse ImageService.testConnection to keep behavior consistent with Web:
+      // - merges param overrides
+      // - enforces base64-only input for image2image tests
+      const result = await imageService.testConnection(safeCfg)
       return createSuccessResponse(result)
     } catch (error) {
-      return createErrorResponse(error)
+      return createStructuredErrorResponse(error)
     }
   })
 
@@ -1001,7 +1436,7 @@ function setupIPC() {
       const models = await imageAdapterRegistry.getDynamicModels(providerId, safeConn)
       return createSuccessResponse(models)
     } catch (error) {
-      return createErrorResponse(error)
+      return createStructuredErrorResponse(error)
     }
   })
 
@@ -1018,7 +1453,7 @@ function setupIPC() {
 
   ipcMain.handle('model-getDataType', async (event) => {
     try {
-      const result = modelManager.getDataType();
+      const result = await modelManager.getDataType();
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1140,7 +1575,7 @@ function setupIPC() {
 
   ipcMain.handle('template-getDataType', async (event) => {
     try {
-      const result = templateManager.getDataType();
+      const result = await templateManager.getDataType();
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1151,7 +1586,7 @@ function setupIPC() {
     try {
       // 清理Vue响应式对象，防止IPC序列化错误
       const safeData = safeSerialize(data);
-      const result = templateManager.validateData(safeData);
+      const result = await templateManager.validateData(safeData);
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1188,7 +1623,7 @@ function setupIPC() {
 
   ipcMain.handle('template-getSupportedLanguages', async (event, template) => {
     try {
-      const result = templateManager.getSupportedLanguages(template);
+      const result = await templateManager.getSupportedLanguages(template);
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1316,7 +1751,7 @@ function setupIPC() {
 
   ipcMain.handle('history-getDataType', async (event) => {
     try {
-      const result = historyManager.getDataType();
+      const result = await historyManager.getDataType();
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1381,9 +1816,10 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('context-duplicate', async (event, id) => {
+  ipcMain.handle('context-duplicate', async (event, id, options) => {
     try {
-      const result = await contextRepo.duplicate(id);
+      const safeOptions = options ? safeSerialize(options) : undefined;
+      const result = await contextRepo.duplicate(id, safeOptions);
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1468,7 +1904,7 @@ function setupIPC() {
 
   ipcMain.handle('context-getDataType', async (event) => {
     try {
-      const result = contextRepo.getDataType();
+      const result = await contextRepo.getDataType();
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
@@ -1482,6 +1918,245 @@ function setupIPC() {
       return createSuccessResponse(result);
     } catch (error) {
       return createErrorResponse(error);
+    }
+  });
+
+  // Favorite Manager handlers
+  ipcMain.handle('favorite-addFavorite', async (event, favorite) => {
+    try {
+      const safeFavorite = safeSerialize(favorite);
+      const result = await favoriteManager.addFavorite(safeFavorite);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getFavorites', async (event, options) => {
+    try {
+      const safeOptions = safeSerialize(options);
+      const result = await favoriteManager.getFavorites(safeOptions || undefined);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getFavorite', async (event, id) => {
+    try {
+      const result = await favoriteManager.getFavorite(id);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-updateFavorite', async (event, id, updates) => {
+    try {
+      const safeUpdates = safeSerialize(updates);
+      await favoriteManager.updateFavorite(id, safeUpdates);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-setFavoritePromptAssetCurrentVersion', async (event, id, versionId) => {
+    try {
+      await favoriteManager.setFavoritePromptAssetCurrentVersion(id, versionId);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-deleteFavoritePromptAssetVersion', async (event, id, versionId) => {
+    try {
+      await favoriteManager.deleteFavoritePromptAssetVersion(id, versionId);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-deleteFavorite', async (event, id) => {
+    try {
+      await favoriteManager.deleteFavorite(id);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-deleteFavorites', async (event, ids) => {
+    try {
+      const safeIds = safeSerialize(ids);
+      await favoriteManager.deleteFavorites(safeIds);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-incrementUseCount', async (event, id) => {
+    try {
+      await favoriteManager.incrementUseCount(id);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getCategories', async () => {
+    try {
+      const result = await favoriteManager.getCategories();
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-addCategory', async (event, category) => {
+    try {
+      const safeCategory = safeSerialize(category);
+      const result = await favoriteManager.addCategory(safeCategory);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-updateCategory', async (event, id, updates) => {
+    try {
+      const safeUpdates = safeSerialize(updates);
+      await favoriteManager.updateCategory(id, safeUpdates);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-deleteCategory', async (event, id) => {
+    try {
+      const result = await favoriteManager.deleteCategory(id);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getStats', async () => {
+    try {
+      const result = await favoriteManager.getStats();
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-searchFavorites', async (event, keyword, options) => {
+    try {
+      const safeOptions = safeSerialize(options);
+      const result = await favoriteManager.searchFavorites(keyword, safeOptions || undefined);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-exportFavorites', async (event, ids) => {
+    try {
+      const safeIds = safeSerialize(ids);
+      const result = await favoriteManager.exportFavorites(safeIds || undefined);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-importFavorites', async (event, data, options) => {
+    try {
+      const safeData = typeof data === 'string' ? data : safeSerialize(data);
+      const safeOptions = safeSerialize(options);
+      const result = await favoriteManager.importFavorites(safeData, safeOptions || undefined);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getAllTags', async () => {
+    try {
+      const result = await favoriteManager.getAllTags();
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-addTag', async (event, tag) => {
+    try {
+      await favoriteManager.addTag(tag);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-renameTag', async (event, oldTag, newTag) => {
+    try {
+      const result = await favoriteManager.renameTag(oldTag, newTag);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-mergeTags', async (event, sourceTags, targetTag) => {
+    try {
+      const safeSourceTags = safeSerialize(sourceTags);
+      const result = await favoriteManager.mergeTags(safeSourceTags, targetTag);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-deleteTag', async (event, tag) => {
+    try {
+      const result = await favoriteManager.deleteTag(tag);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-reorderCategories', async (event, categoryIds) => {
+    try {
+      const safeCategoryIds = safeSerialize(categoryIds);
+      await favoriteManager.reorderCategories(safeCategoryIds);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-getCategoryUsage', async (event, categoryId) => {
+    try {
+      const result = await favoriteManager.getCategoryUsage(categoryId);
+      return createSuccessResponse(result);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('favorite-ensureDefaultCategories', async (event, defaultCategories) => {
+    try {
+      const safeCategories = safeSerialize(defaultCategories);
+      await favoriteManager.ensureDefaultCategories(safeCategories);
+      return createSuccessResponse(null);
+    } catch (error) {
+      return createFavoriteErrorResponse(error);
     }
   });
 
@@ -1499,6 +2174,48 @@ function setupIPC() {
     try {
       await dataManager.importAllData(dataString);
       return createSuccessResponse(null);
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  // Desktop: storage helpers for Data Manager UI
+  ipcMain.handle('data-getStorageInfo', async () => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const mainFilePath = path.join(userDataPath, 'prompt-optimizer-data.json');
+      const backupFilePath = path.join(userDataPath, 'prompt-optimizer-data.json.backup');
+
+      const statSafe = async (p) => {
+        try {
+          const s = await require('fs').promises.stat(p);
+          return typeof s?.size === 'number' ? s.size : 0;
+        } catch {
+          return 0;
+        }
+      };
+
+      const mainSizeBytes = await statSafe(mainFilePath);
+      const backupSizeBytes = await statSafe(backupFilePath);
+
+      return createSuccessResponse({
+        userDataPath,
+        mainFilePath,
+        mainSizeBytes,
+        backupFilePath,
+        backupSizeBytes,
+        totalBytes: mainSizeBytes + backupSizeBytes,
+      });
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
+  ipcMain.handle('data-openStorageDirectory', async () => {
+    try {
+      const userDataPath = app.getPath('userData');
+      await shell.openPath(userDataPath);
+      return createSuccessResponse(true);
     } catch (error) {
       return createErrorResponse(error);
     }
@@ -1555,6 +2272,17 @@ function setupIPC() {
       return createSuccessResponse(packageJson.version);
     } catch (error) {
       console.error('[Main Process] Failed to get app version:', error);
+      return createErrorResponse(error);
+    }
+  });
+
+  // UI locale sync (renderer -> main)
+  // Used to localize Electron-only UI like context menus.
+  ipcMain.handle('app-set-locale', (_event, locale) => {
+    try {
+      uiLocale = normalizeUiLocale(locale) || 'en-US';
+      return createSuccessResponse(null);
+    } catch (error) {
       return createErrorResponse(error);
     }
   });
@@ -1721,21 +2449,21 @@ async function setupUpdateHandlers() {
   autoUpdater.allowPrerelease = DEFAULT_CONFIG.allowPrerelease;
   autoUpdater.allowDowngrade = false; // 默认不允许降级，只在渠道切换时临时启用
 
-  // 环境变量动态配置支持（仅支持公开仓库）
-  const defaultRepo = 'linshenkx/prompt-optimizer';
-  let currentRepo = null;
-
-  // 检测环境变量中的仓库信息
-  if (process.env.GITHUB_REPOSITORY) {
-    currentRepo = process.env.GITHUB_REPOSITORY;
-  } else if (process.env.DEV_REPO_OWNER && process.env.DEV_REPO_NAME) {
-    currentRepo = `${process.env.DEV_REPO_OWNER}/${process.env.DEV_REPO_NAME}`;
-  }
+  // Resolve the repository once so the feed, delivery policy, and Release URLs
+  // cannot diverge when development repository overrides are enabled.
+  const {
+    packagedRepositoryInfo,
+    repositoryInfo: resolvedRepositoryInfo,
+    packagedRepositorySlug: defaultRepo,
+    repositorySlug: currentRepo,
+    shouldOverrideFeed,
+  } = resolveUpdateRepositoryConfig();
+  let repositoryInfo = resolvedRepositoryInfo;
 
   // 如果环境变量中的仓库与默认仓库不同，使用setFeedURL动态配置
-  if (currentRepo && currentRepo !== defaultRepo) {
+  if (shouldOverrideFeed) {
     try {
-      const [owner, repo] = currentRepo.split('/');
+      const { owner, repo } = repositoryInfo;
 
       const feedConfig = {
         provider: 'github',
@@ -1755,10 +2483,15 @@ async function setupUpdateHandlers() {
     } catch (configError) {
       console.error('[Updater] Failed to configure custom repository:', configError);
       console.log('[Updater] Falling back to default configuration');
+      repositoryInfo = packagedRepositoryInfo;
     }
   } else {
-    console.log('[Updater] Using default repository configuration:', defaultRepo);
+    console.log('[Updater] Using default repository configuration:', defaultRepo || 'unknown');
   }
+
+  // Main-process source of truth for how this effective repository can deliver updates.
+  // macOS remains check-only until release artifacts are Developer ID signed.
+  const updateDelivery = getUpdateDeliveryPolicy({ repositoryInfo });
 
   // 开发模式下的更新检查配置
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
@@ -1813,7 +2546,7 @@ async function setupUpdateHandlers() {
       // 构建安全的GitHub Release页面链接
       let releaseUrl;
       try {
-        releaseUrl = buildReleaseUrl(info.version);
+        releaseUrl = buildReleaseUrl(info.version, repositoryInfo);
       } catch (urlError) {
         console.error('[Updater] Failed to build release URL:', urlError);
         // 使用fallback URL或跳过URL
@@ -1873,10 +2606,8 @@ async function setupUpdateHandlers() {
       console.log('[Updater Debug] =====================================');
     }
 
-    // 重置所有状态锁，允许用户重试
-    isCheckingForUpdate = false;
-    isDownloadingUpdate = false;
-    isInstallingUpdate = false;
+    // Operation handlers and download callbacks own their respective locks.
+    // A global updater error must not unlock an unrelated in-flight operation.
 
     // 创建详细的错误信息
     const detailedErrorResponse = createDetailedErrorResponse(error);
@@ -2000,7 +2731,7 @@ async function setupUpdateHandlers() {
 
         // 构建发布页面URL
         try {
-          responseData.remoteReleaseUrl = buildReleaseUrl(updateInfo.version);
+          responseData.remoteReleaseUrl = buildReleaseUrl(updateInfo.version, repositoryInfo);
         } catch (urlError) {
           console.warn('[Updater] Failed to build release URL:', urlError);
         }
@@ -2048,11 +2779,16 @@ async function setupUpdateHandlers() {
   // 统一检查所有版本（解决并发冲突问题）
   ipcMain.handle(IPC_EVENTS.UPDATE_CHECK_ALL_VERSIONS, async () => {
     console.log('[Updater] Starting unified version check for all versions');
+    const currentVersion = require('./package.json').version;
     
     // 检查是否已有更新检查在进行中
     if (isCheckingForUpdate) {
       console.log('[Updater] Update check already in progress, ignoring request');
       return createSuccessResponse({
+        currentVersion,
+        updateDelivery,
+        stable: null,
+        prerelease: null,
         message: 'Update check already in progress',
         inProgress: true
       });
@@ -2062,10 +2798,9 @@ async function setupUpdateHandlers() {
     isCheckingForUpdate = true;
 
     try {
-      // 获取当前版本
-      const currentVersion = require('./package.json').version;
       const results = {
         currentVersion,
+        updateDelivery,
         stable: null,
         prerelease: null
       };
@@ -2116,7 +2851,7 @@ async function setupUpdateHandlers() {
 
         // 构建发布页面URL
         try {
-          remoteReleaseUrl = buildReleaseUrl(updateInfo.version);
+          remoteReleaseUrl = buildReleaseUrl(updateInfo.version, repositoryInfo);
         } catch (urlError) {
           console.warn(`[Updater] Failed to build ${versionType} release URL:`, urlError);
         }
@@ -2209,8 +2944,34 @@ async function setupUpdateHandlers() {
     }
   });
 
+  // Open only a main-process constructed URL for an updater release page.
+  ipcMain.handle(IPC_EVENTS.UPDATE_OPEN_RELEASE_PAGE, async (event, version) => {
+    try {
+      const releaseUrl = version
+        ? buildReleaseUrl(version, repositoryInfo)
+        : updateDelivery.fallbackReleaseUrl;
+
+      if (!releaseUrl) {
+        const error = new Error('Release page URL is unavailable');
+        error.code = 'UPDATER_RELEASE_URL_UNAVAILABLE';
+        throw error;
+      }
+
+      await shell.openExternal(releaseUrl);
+      return createSuccessResponse({ url: releaseUrl });
+    } catch (error) {
+      return createErrorResponse(error);
+    }
+  });
+
   // 开始下载更新
   ipcMain.handle(IPC_EVENTS.UPDATE_START_DOWNLOAD, async () => {
+    if (isManualReleaseDelivery(updateDelivery)) {
+      return createErrorResponse(
+        createManualUpdateRequiredError('start-download', updateDelivery)
+      );
+    }
+
     // 检查是否已有下载在进行中
     if (isDownloadingUpdate) {
       console.log('[Updater] Download already in progress, ignoring request');
@@ -2236,6 +2997,12 @@ async function setupUpdateHandlers() {
 
   // 安装更新
   ipcMain.handle(IPC_EVENTS.UPDATE_INSTALL, async () => {
+    if (isManualReleaseDelivery(updateDelivery)) {
+      return createErrorResponse(
+        createManualUpdateRequiredError('install', updateDelivery)
+      );
+    }
+
     // 检查是否已有安装在进行中
     if (isInstallingUpdate) {
       console.log('[Updater] Install already in progress, ignoring request');
@@ -2360,6 +3127,14 @@ async function setupUpdateHandlers() {
 
   // 下载特定版本（原子操作）
   ipcMain.handle(IPC_EVENTS.UPDATE_DOWNLOAD_SPECIFIC_VERSION, async (event, versionType) => {
+    if (isManualReleaseDelivery(updateDelivery)) {
+      return createErrorResponse(
+        createManualUpdateRequiredError('download-specific-version', updateDelivery, {
+          versionType,
+        })
+      );
+    }
+
     try {
       console.log('[Updater] Starting atomic download for version type:', versionType);
 

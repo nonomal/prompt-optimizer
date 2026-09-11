@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { IImportExportable } from '../../interfaces/import-export';
 import type { BuiltinTemplateLanguage } from './languageService';
+import type { ToolCall } from '../prompt/types';
 
 /**
  * 提示词元数据
@@ -10,7 +11,23 @@ export interface TemplateMetadata {
   lastModified: number;     // 最后修改时间
   author?: string;          // 作者（可选）
   description?: string;     // 描述（可选）
-  templateType: 'optimize' | 'userOptimize' | 'text2imageOptimize' | 'image2imageOptimize' | 'imageIterate' | 'iterate' | 'contextSystemOptimize' | 'contextUserOptimize' | 'contextIterate'; // 模板类型标识
+  templateType:
+    | 'optimize'
+    | 'userOptimize'
+    | 'text2imageOptimize'
+    | 'image2imageOptimize'
+    | 'multiimageOptimize'
+    | 'imageIterate'
+    | 'iterate'
+    | 'conversationMessageOptimize'
+    | 'contextUserOptimize'
+    | 'contextIterate'
+    | 'contextSystemOptimize'
+    | 'evaluation'
+    | 'variable-extraction'
+    | 'variable-value-generation'
+    | 'image-prompt-composition'
+    | 'image-prompt-migration'; // 模板类型标识
   language?: 'zh' | 'en';   // 模板语言（可选，主要用于内置模板语言切换）
   [key: string]: any;       // 允许任意额外字段
 }
@@ -19,8 +36,11 @@ export interface TemplateMetadata {
  * 消息模板定义
  */
 export interface MessageTemplate {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  name?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
 }
 
 /**
@@ -38,6 +58,8 @@ export interface Template {
  * 提示词来源类型
  */
 export type TemplateSourceType = 'builtin' | 'localStorage';
+
+export type TemplateType = TemplateMetadata['templateType'];
 
 // TemplateManagerConfig 已删除 - 配置参数从未被使用
 
@@ -78,7 +100,7 @@ export interface ITemplateManager extends IImportExportable {
   /**
    * List templates by type
    */
-  listTemplatesByType(type: 'optimize' | 'userOptimize' | 'text2imageOptimize' | 'image2imageOptimize' | 'imageIterate' | 'iterate' | 'contextSystemOptimize' | 'contextUserOptimize' | 'contextIterate'): Promise<Template[]>;
+  listTemplatesByType(type: TemplateType): Promise<Template[]>;
 
   /**
    * Change built-in template language
@@ -100,7 +122,7 @@ export interface ITemplateManager extends IImportExportable {
  * 消息模板验证Schema
  */
 export const messageTemplateSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant']),
+  role: z.enum(['system', 'user', 'assistant', 'tool']),
   content: z.string().min(1)
 });
 
@@ -119,7 +141,24 @@ export const templateSchema = z.object({
     lastModified: z.number(),
     author: z.string().optional(),
     description: z.string().optional(),
-    templateType: z.enum(['optimize', 'userOptimize', 'text2imageOptimize', 'image2imageOptimize', 'imageIterate', 'iterate', 'contextSystemOptimize', 'contextUserOptimize', 'contextIterate']),
+    templateType: z.enum([
+      'optimize',
+      'userOptimize',
+      'text2imageOptimize',
+      'image2imageOptimize',
+      'multiimageOptimize',
+      'imageIterate',
+      'iterate',
+      'conversationMessageOptimize',
+      'contextUserOptimize',
+      'contextIterate',
+      'contextSystemOptimize',
+      'evaluation',
+      'variable-extraction',
+      'variable-value-generation',
+      'image-prompt-composition',
+      'image-prompt-migration',
+    ]),
     language: z.enum(['zh', 'en']).optional()
   }).passthrough(), // 允许额外字段通过验证
   isBuiltin: z.boolean().optional()

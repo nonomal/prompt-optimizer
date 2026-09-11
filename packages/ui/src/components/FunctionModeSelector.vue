@@ -1,26 +1,32 @@
 <!-- 功能模式选择器组件 - 使用 Naive UI RadioGroup -->
 <template>
-  <NRadioGroup
+  <NRadioGroup data-testid="function-mode-selector"
     :value="modelValue"
     @update:value="updateFunctionMode"
     size="small"
     class="function-mode-selector"
   >
     <NRadioButton
+      data-testid="function-mode-basic"
       value="basic"
       :title="t('nav.basicMode')"
+      @click="handleModeClick('basic')"
     >
       {{ t('nav.basicMode') }}
     </NRadioButton>
     <NRadioButton
+      data-testid="function-mode-pro"
       value="pro"
       :title="t('nav.contextMode')"
+      @click="handleModeClick('pro')"
     >
       {{ t('nav.contextMode') }}
     </NRadioButton>
     <NRadioButton
+      data-testid="function-mode-image"
       value="image"
       :title="t('nav.imageMode')"
+      @click="handleModeClick('image')"
     >
       {{ t('nav.imageMode') }}
     </NRadioButton>
@@ -35,6 +41,7 @@ const { t } = useI18n()
 
 interface Props {
   modelValue: 'basic' | 'pro' | 'image'
+  allowReselect?: boolean
 }
 
 interface Emits {
@@ -42,7 +49,9 @@ interface Emits {
   (e: 'change', value: 'basic' | 'pro' | 'image'): void
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  allowReselect: false,
+})
 const emit = defineEmits<Emits>()
 
 /**
@@ -51,6 +60,12 @@ const emit = defineEmits<Emits>()
 const updateFunctionMode = (mode: 'basic' | 'pro' | 'image') => {
   emit('update:modelValue', mode)
   emit('change', mode)
+}
+
+const handleModeClick = (mode: 'basic' | 'pro' | 'image') => {
+  if (props.allowReselect && props.modelValue === mode) {
+    emit('change', mode)
+  }
 }
 </script>
 

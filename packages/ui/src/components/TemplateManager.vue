@@ -40,7 +40,11 @@
         </NButton>
       </NGridItem>
       <NGridItem>
-        <NButton block :type="currentCategory==='iterate' ? 'primary' : 'default'" @click="currentCategory='iterate'">
+        <NButton
+          block
+          :type="(currentCategory==='basic-system-iterate' || currentCategory==='basic-user-iterate') ? 'primary' : 'default'"
+          @click="currentCategory = props.basicSubMode === 'system' ? 'basic-system-iterate' : 'basic-user-iterate'"
+        >
           {{ `🔄 ${t('templateManager.iterateTemplates')}` }}
         </NButton>
       </NGridItem>
@@ -323,31 +327,47 @@
         </div>
         
         <!-- Simple Template Editor -->
-        <div v-if="!form.isAdvanced">
-          <label class="block text-sm font-medium mb-1.5">
-            {{ t('template.content') }}
-            <span class="text-xs ml-2 opacity-70">
-              {{ t('templateManager.simpleTemplateHint') }}
-            </span>
-          </label>
+        <NSpace v-if="!form.isAdvanced" vertical :size="8">
+          <NSpace justify="space-between" align="center">
+            <NText>
+              {{ t('template.content') }}
+              <NText depth="3" style="font-size: 12px; margin-left: 8px;">
+                {{ t('templateManager.simpleTemplateHint') }}
+              </NText>
+            </NText>
+            <NButton
+              v-if="!viewingTemplate"
+              size="tiny"
+              quaternary
+              @click="openFullscreenEditor('simple')"
+              :title="t('templateManager.fullscreenEdit')"
+            >
+              <template #icon>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              </template>
+              {{ t('templateManager.fullscreen') }}
+            </NButton>
+          </NSpace>
           <NInput
             v-model:value="form.content"
             type="textarea"
             :placeholder="t('template.contentPlaceholder')"
-            :rows="15"
+            :autosize="{ minRows: 15, maxRows: 30 }"
             :readonly="!!viewingTemplate"
           />
-        </div>
+        </NSpace>
 
         <!-- Advanced Template Editor -->
-        <div v-else>
-          <div class="flex items-center justify-between mb-3">
-            <label class="block text-sm font-medium">
+        <NSpace v-else vertical :size="12">
+          <NSpace justify="space-between" align="center">
+            <NText>
               {{ t('templateManager.messageTemplates') }}
-              <span class="text-xs ml-2 opacity-70">
+              <NText depth="3" style="font-size: 12px; margin-left: 8px;">
                 {{ t('templateManager.advancedTemplateHint') }}
-              </span>
-            </label>
+              </NText>
+            </NText>
             <NButton
               v-if="!viewingTemplate"
               @click="addMessage"
@@ -361,7 +381,7 @@
               </template>
               {{ t('templateManager.addMessage') }}
             </NButton>
-          </div>
+          </NSpace>
 
           <!-- Message List -->
           <NScrollbar style="max-height: 500px;">
@@ -384,19 +404,35 @@
                       { label: t('templateManager.roleAssistant'), value: 'assistant' }
                     ]"
                   />
-                  
+
                   <!-- Message Content -->
-                  <NInput
-                    v-model:value="message.content"
-                    type="textarea"
-                    :placeholder="t('templateManager.messageContentPlaceholder')"
-                    :rows="3"
-                    :readonly="!!viewingTemplate"
-                    class="flex-1"
-                  />
-                  
+                  <NSpace vertical :size="4" style="flex: 1;">
+                    <NInput
+                      v-model:value="message.content"
+                      type="textarea"
+                      :placeholder="t('templateManager.messageContentPlaceholder')"
+                      :autosize="{ minRows: 3, maxRows: 20 }"
+                      :readonly="!!viewingTemplate"
+                    />
+                    <NButton
+                      v-if="!viewingTemplate"
+                      size="tiny"
+                      quaternary
+                      @click="openFullscreenEditor('advanced', index)"
+                      :title="t('templateManager.fullscreenEdit')"
+                      style="align-self: flex-end;"
+                    >
+                      <template #icon>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3 h-3">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                        </svg>
+                      </template>
+                      {{ t('templateManager.fullscreen') }}
+                    </NButton>
+                  </NSpace>
+
                   <!-- Message Controls -->
-                  <div v-if="!viewingTemplate" class="flex flex-col gap-1 flex-shrink-0">
+                  <NSpace v-if="!viewingTemplate" vertical :size="4" style="flex-shrink: 0;">
                     <NButton
                       quaternary
                       size="tiny"
@@ -433,12 +469,12 @@
                         </svg>
                       </template>
                     </NButton>
-                  </div>
+                  </NSpace>
                 </div>
               </NCard>
             </NSpace>
           </NScrollbar>
-        </div>
+        </NSpace>
         
         <!-- Template Preview -->
         <div v-if="form.isAdvanced && form.messages.length > 0">
@@ -553,27 +589,76 @@
         </NSpace>
       </template>
     </NModal>
+
+    <!-- Fullscreen Editor Modal -->
+    <NModal
+      :show="fullscreenEditor.show"
+      preset="card"
+      :style="{ width: '95vw', height: '90vh', maxWidth: '1400px' }"
+      :title="t('templateManager.fullscreenEdit')"
+      size="large"
+      :bordered="false"
+      :segmented="true"
+      @update:show="(value: boolean) => !value && closeFullscreenEditor()"
+    >
+      <NEl style="height: calc(90vh - 140px);">
+        <NInput
+          v-model:value="fullscreenEditor.content"
+          type="textarea"
+          :placeholder="fullscreenEditor.type === 'simple'
+            ? t('template.contentPlaceholder')
+            : t('templateManager.messageContentPlaceholder')"
+          style="height: 100%;"
+          :autosize="false"
+        />
+      </NEl>
+
+      <template #action>
+        <NSpace justify="space-between" style="width: 100%;">
+          <NText depth="3" style="font-size: 12px;">
+            {{ t('templateManager.characterCount', { count: fullscreenEditor.content.length }) }}
+          </NText>
+          <NSpace>
+            <NButton @click="closeFullscreenEditor()">
+              {{ t('common.cancel') }}
+            </NButton>
+            <NButton type="primary" @click="saveFullscreenEditor">
+              {{ t('common.save') }}
+            </NButton>
+          </NSpace>
+        </NSpace>
+      </template>
+    </NModal>
   </NModal>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, nextTick, inject } from 'vue'
+
 import { useI18n } from 'vue-i18n'
-import { 
-  NModal, NCard, NTabs, NTabPane, NButton, NTag, NInput, NInputGroup, 
-  NSelect, NSpace, NText, NH3, NH4, NDivider, NScrollbar,
-  NButtonGroup, NIcon, NCode, NSwitch, NMessageProvider,
-  NGrid, NGridItem
+import {
+  NModal, NCard, NButton, NTag, NInput,
+  NSelect, NSpace, NText, NH3, NH4, NScrollbar,
+  NCode,
+  NGrid, NGridItem, NEl
 } from 'naive-ui'
-import { TemplateProcessor, type Template, type MessageTemplate } from '@prompt-optimizer/core'
-import { useToast } from '../composables/useToast'
+import { TemplateProcessor, type Template, type MessageTemplate, type ITemplateManager, TemplateLanguageService } from '@prompt-optimizer/core'
+import { useConfirmDialog } from '../composables/ui/useConfirmDialog'
+import { useToast } from '../composables/ui/useToast'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import BuiltinTemplateLanguageSwitch from './BuiltinTemplateLanguageSwitch.vue'
 import { syntaxGuideContent } from '../docs/syntax-guide'
-import type { ITemplateManager, TemplateLanguageService } from '@prompt-optimizer/core'
 import { i18n } from '../plugins/i18n'
+import { useBasicSystemSession } from '../stores/session/useBasicSystemSession'
+import { useBasicUserSession } from '../stores/session/useBasicUserSession'
+import { useProMultiMessageSession } from '../stores/session/useProMultiMessageSession'
+import { useProVariableSession } from '../stores/session/useProVariableSession'
+import { useImageText2ImageSession } from '../stores/session/useImageText2ImageSession'
+import { useImageImage2ImageSession } from '../stores/session/useImageImage2ImageSession'
+import { useImageMultiImageSession } from '../stores/session/useImageMultiImageSession'
 
 const { t } = useI18n()
+const confirmDialog = useConfirmDialog()
 
 interface Services {
   templateManager: ITemplateManager;
@@ -587,27 +672,37 @@ if (!services?.value) {
 }
 
 const getTemplateManager = computed(() => services.value!.templateManager)
-const getTemplateLanguageService = computed(() => services.value!.templateLanguageService)
+// const getTemplateLanguageService = computed(() => services.value!.templateLanguageService)  // 保留用于未来扩展
 
 const props = defineProps<{
-  selectedSystemOptimizeTemplate?: Template,
-  selectedUserOptimizeTemplate?: Template,
-  selectedIterateTemplate?: Template,
   templateType:
     | 'optimize'
     | 'userOptimize'
     | 'iterate'
     | 'text2imageOptimize'
     | 'image2imageOptimize'
+    | 'multiimageOptimize'
     | 'imageIterate'
-    | 'contextSystemOptimize'
+    | 'conversationMessageOptimize'
     | 'contextUserOptimize'
-    | 'contextIterate',
+   | 'contextIterate',
   show: boolean
+  basicSubMode?: 'system' | 'user'
+  proSubMode?: 'multi' | 'variable'
+  imageSubMode?: 'text2image' | 'image2image' | 'multiimage'
 }>()
 
 const emit = defineEmits(['close', 'select', 'update:show', 'languageChanged'])
 const toast = useToast()
+
+// Session Stores（单一真源：持久化选择存储在各子模式 session store 中）
+const basicSystemSession = useBasicSystemSession()
+const basicUserSession = useBasicUserSession()
+const proMultiMessageSession = useProMultiMessageSession()
+const proVariableSession = useProVariableSession()
+const imageText2ImageSession = useImageText2ImageSession()
+const imageImage2ImageSession = useImageImage2ImageSession()
+const imageMultiImageSession = useImageMultiImageSession()
 
 const templates = ref<Template[]>([])
 const currentCategory = ref(getCategoryFromProps())
@@ -643,21 +738,16 @@ const migrationDialog = ref<{
   converted: []
 })
 
-// 添加计算属性
-const selectedTemplate = computed(() => {
-  switch (props.templateType) {
-    case 'optimize':
-    case 'contextSystemOptimize':
-      return props.selectedSystemOptimizeTemplate
-    case 'userOptimize':
-    case 'contextUserOptimize':
-      return props.selectedUserOptimizeTemplate
-    case 'iterate':
-    case 'contextIterate':
-      return props.selectedIterateTemplate
-    default:
-      return null
-  }
+const fullscreenEditor = ref<{
+  show: boolean
+  type: 'simple' | 'advanced'
+  messageIndex: number
+  content: string
+}>({
+  show: false,
+  type: 'simple',
+  messageIndex: -1,
+  content: ''
 })
 
 // 根据props确定初始分类
@@ -668,14 +758,18 @@ function getCategoryFromProps() {
     case 'userOptimize':
       return 'user-optimize'
     case 'iterate':
-      return 'iterate'
+      if (props.basicSubMode === 'system') return 'basic-system-iterate'
+      if (props.basicSubMode === 'user') return 'basic-user-iterate'
+      return 'basic-user-iterate'
     case 'text2imageOptimize':
       return 'image-text2image-optimize'
     case 'image2imageOptimize':
       return 'image-image2image-optimize'
+    case 'multiimageOptimize':
+      return 'image-multiimage-optimize'
     case 'imageIterate':
       return 'image-iterate'
-    case 'contextSystemOptimize':
+    case 'conversationMessageOptimize':
       return 'context-system-optimize'
     case 'contextUserOptimize':
       return 'context-user-optimize'
@@ -687,22 +781,25 @@ function getCategoryFromProps() {
 }
 
 // 获取当前模板类型 - 根据当前分类而不是props
-function getCurrentTemplateType(): 'optimize' | 'userOptimize' | 'iterate' | 'text2imageOptimize' | 'image2imageOptimize' | 'imageIterate' | 'contextSystemOptimize' | 'contextUserOptimize' | 'contextIterate' {
+function getCurrentTemplateType(): 'optimize' | 'userOptimize' | 'iterate' | 'text2imageOptimize' | 'image2imageOptimize' | 'multiimageOptimize' | 'imageIterate' | 'conversationMessageOptimize' | 'contextUserOptimize' | 'contextIterate' {
   switch (currentCategory.value) {
     case 'system-optimize':
       return 'optimize'
     case 'user-optimize':
       return 'userOptimize'
-    case 'iterate':
+    case 'basic-system-iterate':
+    case 'basic-user-iterate':
       return 'iterate'
     case 'image-text2image-optimize':
       return 'text2imageOptimize'
     case 'image-image2image-optimize':
       return 'image2imageOptimize'
+    case 'image-multiimage-optimize':
+      return 'multiimageOptimize'
     case 'image-iterate':
       return 'imageIterate'
     case 'context-system-optimize':
-      return 'contextSystemOptimize'
+      return 'conversationMessageOptimize'
     case 'context-user-optimize':
       return 'contextUserOptimize'
     case 'context-iterate':
@@ -713,8 +810,43 @@ function getCurrentTemplateType(): 'optimize' | 'userOptimize' | 'iterate' | 'te
 }
 
 // 获取当前选中的模板ID
-function getSelectedTemplateId() {
-  return selectedTemplate.value?.id
+function getSelectedTemplateIdForCategory(category: string): string | undefined {
+  switch (category) {
+    case 'system-optimize':
+      return basicSystemSession.selectedTemplateId || undefined
+    case 'user-optimize':
+      return basicUserSession.selectedTemplateId || undefined
+    case 'basic-system-iterate':
+      return basicSystemSession.selectedIterateTemplateId || undefined
+    case 'basic-user-iterate':
+      return basicUserSession.selectedIterateTemplateId || undefined
+    case 'context-system-optimize':
+      return proMultiMessageSession.selectedTemplateId || undefined
+    case 'context-user-optimize':
+      return proVariableSession.selectedTemplateId || undefined
+    case 'context-iterate':
+      return props.proSubMode === 'multi'
+        ? (proMultiMessageSession.selectedIterateTemplateId || undefined)
+        : (proVariableSession.selectedIterateTemplateId || undefined)
+    case 'image-text2image-optimize':
+      return imageText2ImageSession.selectedTemplateId || undefined
+    case 'image-image2image-optimize':
+      return imageImage2ImageSession.selectedTemplateId || undefined
+    case 'image-multiimage-optimize':
+      return imageMultiImageSession.selectedTemplateId || undefined
+    case 'image-iterate':
+      return props.imageSubMode === 'image2image'
+        ? (imageImage2ImageSession.selectedIterateTemplateId || undefined)
+        : props.imageSubMode === 'multiimage'
+          ? (imageMultiImageSession.selectedIterateTemplateId || undefined)
+        : (imageText2ImageSession.selectedIterateTemplateId || undefined)
+    default:
+      return undefined
+  }
+}
+
+function getSelectedTemplateId(): string | undefined {
+  return getSelectedTemplateIdForCategory(currentCategory.value)
 }
 
 // 获取当前分类标签
@@ -724,12 +856,16 @@ function getCurrentCategoryLabel() {
       return t('templateManager.optimizeTemplateList')
     case 'user-optimize':
       return t('templateManager.userOptimizeTemplateList')
-    case 'iterate':
-      return t('templateManager.iterateTemplateList')
+    case 'basic-system-iterate':
+      return t('templateManager.iterateTemplatesSystem')
+    case 'basic-user-iterate':
+      return t('templateManager.iterateTemplatesUser')
     case 'image-text2image-optimize':
       return t('templateManager.imageText2ImageTemplates')
     case 'image-image2image-optimize':
       return t('templateManager.imageImage2ImageTemplates')
+    case 'image-multiimage-optimize':
+      return t('imageMode.multiimage')
     case 'image-iterate':
       return t('templateManager.imageIterateTemplates')
     case 'context-system-optimize':
@@ -781,10 +917,10 @@ const loadTemplates = async () => {
     // 统一使用异步方法
     const allTemplates = await getTemplateManager.value.listTemplates()
     templates.value = allTemplates
-    console.log('加载到的提示词:', templates.value)
+    console.log('Loaded templates:', templates.value)
   } catch (error) {
-    console.error('加载提示词失败:', error)
-    toast.error('加载提示词失败')
+    console.error('Failed to load templates:', error)
+    toast.error(t('toast.error.loadTemplatesFailed'))
   }
 }
 
@@ -890,17 +1026,21 @@ const moveMessage = (index: number, direction: number) => {
 }
 
 // 初始化textarea高度 - 只在打开时调用一次
-const initializeTextareaHeight = (textarea: HTMLTextAreaElement) => {
-  if (!textarea || (textarea as any)._initialized) return
-  
+type AdjustableTextarea = HTMLTextAreaElement & { _initialized?: boolean }
+
+const initializeTextareaHeight = (textarea: HTMLTextAreaElement | null) => {
+  if (!textarea) return
+  const element = textarea as AdjustableTextarea
+  if (element._initialized) return
+
   try {
     const minHeight = 80
     const maxHeight = 280
     
     // 设置为auto以获取内容实际高度
-    const originalHeight = textarea.style.height
-    textarea.style.height = 'auto'
-    const scrollHeight = textarea.scrollHeight
+    // const originalHeight = textarea.style.height  // 保留用于可能的需要
+    element.style.height = 'auto'
+    const scrollHeight = element.scrollHeight
     
     let initialHeight
     if (scrollHeight <= minHeight) {
@@ -911,8 +1051,8 @@ const initializeTextareaHeight = (textarea: HTMLTextAreaElement) => {
       initialHeight = scrollHeight
     }
     
-    textarea.style.height = initialHeight + 'px'
-    ;(textarea as any)._initialized = true
+    element.style.height = initialHeight + 'px'
+    element._initialized = true
   } catch (error) {
     console.warn('Textarea initialization error:', error)
   }
@@ -960,27 +1100,42 @@ const applyMigration = async () => {
     await getTemplateManager.value.saveTemplate(updatedTemplate)
     await loadTemplates()
 
-    // 如果当前选中的模板被更新，重新选择
-    const isCurrentSelected = getSelectedTemplateId() === template.id
-
-    if (isCurrentSelected) {
-      try {
-        const updated = getTemplateManager.value.getTemplate(template.id)
-        if (updated) {
-          const templateType = currentCategory.value === 'iterate' ? 'iterate' : 'optimize'
-          emit('select', updated, templateType)
-        }
-      } catch (error) {
-        console.error('Failed to get updated template:', error)
-      }
-    }
-
     migrationDialog.value.show = false
     toast.success(t('templateManager.migrationSuccess'))
   } catch (error) {
     console.error('Migration failed:', error)
     toast.error(t('templateManager.migrationFailed'))
   }
+}
+
+// 打开全屏编辑器
+const openFullscreenEditor = (type: 'simple' | 'advanced', messageIndex = -1) => {
+  fullscreenEditor.value = {
+    show: true,
+    type,
+    messageIndex,
+    content: type === 'simple' ? form.value.content : form.value.messages[messageIndex]?.content || ''
+  }
+}
+
+// 关闭全屏编辑器
+const closeFullscreenEditor = () => {
+  fullscreenEditor.value = {
+    show: false,
+    type: 'simple',
+    messageIndex: -1,
+    content: ''
+  }
+}
+
+// 保存全屏编辑器内容
+const saveFullscreenEditor = () => {
+  if (fullscreenEditor.value.type === 'simple') {
+    form.value.content = fullscreenEditor.value.content
+  } else if (fullscreenEditor.value.messageIndex >= 0) {
+    form.value.messages[fullscreenEditor.value.messageIndex].content = fullscreenEditor.value.content
+  }
+  closeFullscreenEditor()
 }
 
 // 提交表单
@@ -1024,103 +1179,63 @@ const handleSubmit = async () => {
     await getTemplateManager.value.saveTemplate(templateData)
     await loadTemplates()
 
-    const isCurrentSelected = getSelectedTemplateId() === templateData.id
-
-    if (editingTemplate.value && isCurrentSelected) {
-      try {
-        // 统一使用异步方法
-        const updatedTemplate = await getTemplateManager.value.getTemplate(templateData.id)
-        if (updatedTemplate) {
-          emit('select', updatedTemplate, getCurrentTemplateType());
-        }
-      } catch (error) {
-        console.error('Failed to get updated template after save:', error)
-      }
-    }
-
     toast.success(editingTemplate.value ? t('template.success.updated') : t('template.success.added'))
     cancelEdit()
   } catch (error) {
-    console.error('保存提示词失败:', error)
+    console.error('Failed to save template:', error)
     toast.error(t('template.error.saveFailed'))
   }
 }
 
 // 确认删除
 const confirmDelete = async (templateId: string) => {
-  if (confirm(t('template.deleteConfirm'))) {
-    try {
-      await getTemplateManager.value.deleteTemplate(templateId)
-      await loadTemplates()
-
-      // 获取当前分类的剩余模板
-      const remainingTemplates = filteredTemplates.value
-
-      if (getSelectedTemplateId() === templateId) {
-        emit('select', remainingTemplates[0] || null, getCurrentTemplateType())
-      }
-      
-      toast.success(t('template.success.deleted'))
-    } catch (error) {
-      console.error('删除提示词失败:', error)
-      toast.error(t('template.error.deleteFailed'))
-    }
-  }
-}
-
-// 导出提示词
-const exportTemplate = async (templateId: string) => {
-  try {
-    const templateJson = await getTemplateManager.value.exportTemplate(templateId);
-    const blob = new Blob([templateJson], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `template-${templateId}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast.success(t('template.success.exported'));
-  } catch (error) {
-    console.error('导出提示词失败:', error);
-    toast.error(t('template.error.exportFailed'));
-  }
-}
-
-// 导入提示词
-const fileInput = ref<HTMLInputElement | null>(null)
-const handleFileImport = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (!file) return
+  const confirmed = await confirmDialog.warning({
+    title: t('common.warning'),
+    content: t('template.deleteConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+  })
+  if (!confirmed) return
 
   try {
-    const reader = new FileReader()
-    reader.onload = async (e) => {
-      try {
-        if (e.target?.result && typeof e.target.result === 'string') {
-          await getTemplateManager.value.importTemplate(e.target.result)
-        } else {
-          // 让失败不再静默，明确地抛出错误
-          throw new Error('Failed to read file content as string.')
-        }
-        await loadTemplates()
-        toast.success(t('template.success.imported'))
-        if (target) {
-          target.value = ''
-        }
-      } catch (error) {
-        console.error('导入提示词失败:', error)
-        toast.error(t('template.error.importFailed'))
-      }
-    }
-    reader.readAsText(file)
+    await getTemplateManager.value.deleteTemplate(templateId)
+    await loadTemplates()
+
+    toast.success(t('template.success.deleted'))
   } catch (error) {
-    console.error('读取文件失败:', error)
-    toast.error(t('template.error.readFailed'))
+    console.error('Failed to delete template:', error)
+    toast.error(t('template.error.deleteFailed'))
   }
 }
+
+// 导出提示词（保留用于未来功能）
+// const exportTemplate = async (templateId: string) => {
+//   try {
+//     const templateJson = await getTemplateManager.value.exportTemplate(templateId);
+//     const blob = new Blob([templateJson], { type: 'application/json' });
+//     const url = URL.createObjectURL(blob);
+//     const a = document.createElement('a');
+//     a.href = url;
+//     a.download = `template-${templateId}.json`;
+//     document.body.appendChild(a);
+//     a.click();
+//     document.body.removeChild(a);
+//     URL.revokeObjectURL(url);
+//     toast.success(t('template.success.exported'));
+//   } catch (error) {
+//     console.error('导出提示词失败:', error);
+//     toast.error(t('template.error.exportFailed'));
+//   }
+// }
+
+// 导入提示词功能（暂时移除，保留用于未来功能）
+// const fileInput = ref<HTMLInputElement | null>(null)
+// const handleFileImport = (event: Event) => {
+//   const target = event.target as HTMLInputElement
+//   const file = target.files?.[0]
+//   if (!file) return
+//   // ... 函数实现暂时移除
+// }
 
 // 复制内置提示词
 const copyTemplate = (template: Template) => {
@@ -1128,7 +1243,7 @@ const copyTemplate = (template: Template) => {
   const isAdvanced = Array.isArray(template.content)
 
   form.value = {
-    name: `${template.name} - 副本`,
+    name: `${template.name} - Copy`,
     content: isAdvanced ? '' : template.content as string,
     description: template.metadata.description || '',
     isAdvanced,
@@ -1138,7 +1253,7 @@ const copyTemplate = (template: Template) => {
 
 // 选择提示词
 const selectTemplate = (template: Template) => {
-  emit('select', template, getCurrentTemplateType());
+  emit('select', template, getCurrentTemplateType(), currentCategory.value);
 }
 
 // 按分类过滤提示词
@@ -1155,8 +1270,9 @@ const filteredTemplates = computed(() => {
         // 用户提示词优化模板：userOptimize类型
         return templateType === 'userOptimize'
 
-      case 'iterate':
-        // 迭代优化模板：iterate类型
+      case 'basic-system-iterate':
+      case 'basic-user-iterate':
+        // 迭代优化模板：iterate类型（Basic 模式下按子模式隔离选中态）
         return templateType === 'iterate'
 
       // 图像类模板
@@ -1164,12 +1280,14 @@ const filteredTemplates = computed(() => {
         return templateType === 'text2imageOptimize'
       case 'image-image2image-optimize':
         return templateType === 'image2imageOptimize'
+      case 'image-multiimage-optimize':
+        return templateType === 'multiimageOptimize'
       case 'image-iterate':
         return templateType === 'imageIterate'
 
       case 'context-system-optimize':
         // 上下文-系统优化模板
-        return templateType === 'contextSystemOptimize'
+        return templateType === 'conversationMessageOptimize'
 
       case 'context-user-optimize':
         // 上下文-用户优化模板
@@ -1191,43 +1309,26 @@ const syntaxGuideMarkdown = computed(() => {
   return syntaxGuideContent[lang] || syntaxGuideContent['zh-CN']
 })
 
-  // 处理内置模板语言变化
-  const handleLanguageChanged = async (newLanguage: string) => {
-    // 重新加载模板列表以反映新的语言
-    await loadTemplates()
-
-    // 如果当前选中的模板是内置模板，需要重新选择以获取新语言版本
-    const currentSelected = selectedTemplate.value
-
-    if (currentSelected && currentSelected.isBuiltin) {
-      try {
-        // 获取新语言版本的同一模板
-        const updatedTemplate = await getTemplateManager.value.getTemplate(currentSelected.id)
-        if (updatedTemplate) {
-          emit('select', updatedTemplate, getCurrentTemplateType());
-        }
-      } catch (error) {
-        console.error('Failed to update selected template after language change:', error)
-        // 如果获取失败，选择第一个可用的模板
-        try {
-          const availableTemplates = filteredTemplates.value
-          if (availableTemplates.length > 0) {
-            emit('select', availableTemplates[0], getCurrentTemplateType());
-          }
-        } catch (listError) {
-          console.error('Failed to list templates after language change:', listError)
-        }
-      }
-    }
-
-    // 发出语言变化事件，通知父组件
-    emit('languageChanged', newLanguage)
-  }
+// 处理内置模板语言变化（仅刷新列表，不隐式修改选择）
+const handleLanguageChanged = async (newLanguage: string) => {
+  await loadTemplates()
+  emit('languageChanged', newLanguage)
+}
 
 // 监听 props.templateType 变化，更新当前分类
-watch(() => props.templateType, (newTemplateType) => {
+watch(() => props.templateType, () => {
   currentCategory.value = getCategoryFromProps()
 }, { immediate: true })
+
+// 处理“同一种 templateType 反复打开”场景：templateType 可能不变，但 show 会变化
+// 这里在打开时重新对齐当前分类，避免因路由/子模式变化导致展示与选择不一致
+watch(
+  () => props.show,
+  (isShown) => {
+    if (!isShown) return
+    currentCategory.value = getCategoryFromProps()
+  }
+)
 
 // 生命周期钩子
 onMounted(async () => {

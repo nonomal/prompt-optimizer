@@ -13,6 +13,7 @@
     :loading="loading"
     :streaming="streaming"
     :compareService="compareService"
+    :test-id="testId"
     :style="{ height: '100%', maxHeight: '100%', flex: 1, minHeight: 0, overflow: 'hidden' }"
     @update:content="emit('update:content', $event)"
     @update:reasoning="emit('update:reasoning', $event)"
@@ -22,7 +23,12 @@
     @edit-end="emit('edit-end')"
     @reasoning-toggle="emit('reasoning-toggle', $event)"
     @view-change="emit('view-change', $event)"
-  />
+    @save-favorite="emit('save-favorite', $event)"
+  >
+    <template #toolbar-right-extra>
+      <slot name="toolbar-right-extra"></slot>
+    </template>
+  </OutputDisplayCore>
   <OutputDisplayFullscreen
     v-model="isShowingFullscreen"
     :content="content"
@@ -41,7 +47,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject, type Ref } from 'vue';
+import { computed, ref, inject, type Ref } from 'vue'
+
 import OutputDisplayCore from './OutputDisplayCore.vue';
 import OutputDisplayFullscreen from './OutputDisplayFullscreen.vue';
 import type { AppServices } from '../types/services';
@@ -50,7 +57,7 @@ defineOptions({
   inheritAttrs: false,
 });
 
-type ActionName = 'fullscreen' | 'diff' | 'copy' | 'edit' | 'reasoning'
+type ActionName = 'fullscreen' | 'diff' | 'copy' | 'edit' | 'reasoning' | 'favorite'
 
 // Props
 interface Props {
@@ -64,10 +71,14 @@ interface Props {
   enableFullscreen?: boolean // Mapped to enabledActions
   enableEdit?: boolean // Mapped to enabledActions
   enableDiff?: boolean // Mapped to enabledActions
+  enableFavorite?: boolean // Mapped to enabledActions
   height?: string | number
   placeholder?: string
   loading?: boolean
   streaming?: boolean
+
+  /** 透传给 OutputDisplayCore 的 data-testid（挂在根节点） */
+  testId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -75,6 +86,8 @@ const props = withDefaults(defineProps<Props>(), {
     enableFullscreen: true,
     enableEdit: true,
     enableDiff: true,
+    enableFavorite: true,
+    testId: undefined,
 });
 
 // Emits
@@ -88,25 +101,28 @@ const emit = defineEmits<{
   'reasoning-toggle': [expanded: boolean]
   'view-change': [mode: 'base' | 'diff']
   'reasoning-auto-hide': []
+  'save-favorite': [data: { content: string; originalContent?: string }]
 }>()
 
 const isShowingFullscreen = ref(false);
 
+const testId = computed(() => props.testId || undefined)
+
 // 注入服务并获取 CompareService
 const services = inject<Ref<AppServices | null>>('services');
 if (!services) {
-  throw new Error('[OutputDisplay] services未正确注入，请确保在App组件中正确provide了services');
+  throw new Error('[OutputDisplay] Services were not injected correctly. Make sure App provides the services instance.');
 }
 
 const compareService = computed(() => {
   const servicesValue = services.value;
   if (!servicesValue) {
-    throw new Error('[OutputDisplay] services未初始化，请确保应用已正确启动');
+    throw new Error('[OutputDisplay] Services are not initialized. Make sure the application has started correctly.');
   }
 
   const service = servicesValue.compareService;
   if (!service) {
-    throw new Error('[OutputDisplay] compareService未初始化，请确保服务已正确配置');
+    throw new Error('[OutputDisplay] CompareService is not initialized. Make sure the service is configured correctly.');
   }
 
   return service;
@@ -118,6 +134,7 @@ const enabledActions = computed(() => {
     if (props.enableDiff) actions.push('diff');
     if (props.enableCopy) actions.push('copy');
     if (props.enableEdit) actions.push('edit');
+    if (props.enableFavorite) actions.push('favorite');
     return actions;
 })
 
@@ -149,36 +166,46 @@ defineExpose({ forceRefreshContent, forceExitEditing });
 </script>
 
 <style scoped>
+@reference "../styles/index.css";
+
 .output-display {
-  @apply flex flex-col h-full border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 relative;
+  @apply flex flex-col h-full rounded-lg relative;
+  border: 1px solid var(--n-border-color);
+  background: var(--n-card-color, var(--n-color));
+  color: var(--n-text-color);
 }
 
 /* 悬浮工具栏样式 */
 .floating-toolbar {
-  @apply absolute top-2 right-2 z-10 flex items-center gap-2 px-3 py-2 rounded-lg shadow-lg;
-  background: rgba(255, 255, 255, 0.8);
+  @apply absolute top-2 right-2 z-10 flex items-center gap-2 px-3 py-2 rounded-lg;
+  background: color-mix(in srgb, var(--n-popover-color, var(--n-color)) 88%, transparent);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--n-border-color);
+  box-shadow: var(--n-box-shadow-2, 0 8px 20px color-mix(in srgb, var(--n-text-color) 12%, transparent));
 }
 
 /* 全屏模式下的悬浮复制按钮 */
 .floating-copy-btn {
-  @apply absolute top-2 right-2 z-10 flex items-center gap-2 px-3 py-2 rounded-lg shadow-lg;
-  background: rgba(255, 255, 255, 0.8);
+  @apply absolute top-2 right-2 z-10 flex items-center gap-2 px-3 py-2 rounded-lg;
+  background: color-mix(in srgb, var(--n-popover-color, var(--n-color)) 88%, transparent);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-.dark .floating-toolbar,
-.dark .floating-copy-btn {
-  background: rgba(31, 41, 55, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--n-border-color);
+  box-shadow: var(--n-box-shadow-2, 0 8px 20px color-mix(in srgb, var(--n-text-color) 12%, transparent));
 }
 
 .toolbar-btn {
   @apply flex items-center gap-1 px-2 py-1 text-sm rounded transition-colors;
-  @apply hover:bg-gray-100 dark:hover:bg-gray-700;
-  @apply focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50;
+  color: var(--n-text-color-2);
+}
+
+.toolbar-btn:hover {
+  background: var(--n-hover-color);
+  color: var(--n-text-color);
+}
+
+.toolbar-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--n-primary-color-suppl);
 }
 
 /* 悬浮工具栏动画 */
@@ -206,7 +233,11 @@ defineExpose({ forceRefreshContent, forceExitEditing });
 }
 
 .reasoning-header {
-  @apply flex justify-between items-center cursor-pointer p-2 rounded hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors;
+  @apply flex justify-between items-center cursor-pointer p-2 rounded transition-colors;
+}
+
+.reasoning-header:hover {
+  background: var(--n-hover-color);
 }
 
 .reasoning-toggle {
@@ -254,7 +285,8 @@ defineExpose({ forceRefreshContent, forceExitEditing });
 
 .loading-placeholder,
 .empty-placeholder {
-  @apply flex items-center justify-center h-full text-gray-500 text-sm italic;
+  @apply flex items-center justify-center h-full text-sm italic;
+  color: var(--n-text-color-3);
 }
 
 .edit-actions {
@@ -266,11 +298,13 @@ defineExpose({ forceRefreshContent, forceExitEditing });
 }
 
 .output-display--editable .output-display__content {
-  @apply border border-dashed border-gray-300 dark:border-gray-600;
+  @apply border border-dashed;
+  border-color: var(--n-border-color);
 }
 
 .output-display--editing .output-display__content {
-  @apply border-solid border-blue-500;
+  @apply border-solid;
+  border-color: var(--n-primary-color);
 }
 
 /* 隐藏滚动条但保持可滚动 */

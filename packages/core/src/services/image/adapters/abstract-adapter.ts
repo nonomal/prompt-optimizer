@@ -7,7 +7,8 @@ import type {
   ImageModelConfig,
   ImageParameterDefinition
 } from '../types'
-import { getProxyUrl, isDocker, isVercel, isRunningInElectron } from '../../../utils/environment'
+import { ImageError } from '../errors'
+import { IMAGE_ERROR_CODES } from '../../../constants/error-codes'
 
 /**
  * 抽象图像提供商适配器基类
@@ -74,42 +75,26 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
     return base
   }
 
-  // 仅返回“基础地址”的最终结果（考虑代理）；用于 SDK 型（如 Gemini）
-  protected resolveBaseUrl(config: ImageModelConfig, isStream: boolean = false): string {
+  // 仅返回"基础地址"的最终结果（考虑代理）；用于 SDK 型（如 Gemini）
+  protected resolveBaseUrl(config: ImageModelConfig, _isStream: boolean = false): string {
     const rawBase = (config.connectionConfig?.baseURL || this.getProvider().defaultBaseURL || '').trim()
     if (!rawBase) return ''
     const normalizedBase = this.normalizeBaseUrl(rawBase)
     if (!normalizedBase) return ''
 
-    // Electron/Node 环境不走 Web 代理
-    if (typeof window === 'undefined' || isRunningInElectron()) return normalizedBase
-
-    const useVercel = !!config.connectionConfig?.useVercelProxy
-    const useDocker = !!config.connectionConfig?.useDockerProxy
-
-    if (useVercel && isVercel()) return getProxyUrl(normalizedBase, isStream)
-    if (useDocker && isDocker()) return getProxyUrl(normalizedBase, isStream)
     return normalizedBase
   }
 
-  // 返回“完整目标 URL”的最终结果；用于手写 fetch 型适配器
+  // 返回"完整目标 URL"的最终结果；用于手写 fetch 型适配器
   protected resolveEndpointUrl(
     config: ImageModelConfig,
     endpoint: string,
-    isStream: boolean = false
+    _isStream: boolean = false
   ): string {
     const base = this.normalizeBaseUrl((config.connectionConfig?.baseURL || this.getProvider().defaultBaseURL || '').trim())
     const ep = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
     const full = `${base}${ep}`
 
-    // Electron/Node 环境不走 Web 代理
-    if (typeof window === 'undefined' || isRunningInElectron()) return full
-
-    const useVercel = !!config.connectionConfig?.useVercelProxy
-    const useDocker = !!config.connectionConfig?.useDockerProxy
-
-    if (useVercel && isVercel()) return getProxyUrl(full, isStream)
-    if (useDocker && isDocker()) return getProxyUrl(full, isStream)
     return full
   }
 
@@ -122,7 +107,7 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
   public async getModelsAsync(_connectionConfig: Record<string, any>): Promise<ImageModel[]> {
     const provider = this.getProvider()
     if (!provider.supportsDynamicModels) {
-      throw new Error(`Provider ${provider.name} does not support dynamic models`)
+      throw new ImageError(IMAGE_ERROR_CODES.DYNAMIC_MODELS_NOT_SUPPORTED, undefined, { providerName: provider.name })
     }
     // 子类应该覆盖此方法
     return this.getModels()
@@ -132,11 +117,11 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
   protected validateRequest(request: ImageRequest, config: ImageModelConfig): void {
     // 基础验证：检查必需字段
     if (!request.prompt || !request.prompt.trim()) {
-      throw new Error('Prompt is required')
+      throw new ImageError(IMAGE_ERROR_CODES.PROMPT_EMPTY)
     }
 
     if (!config.modelId) {
-      throw new Error('Model ID is required')
+      throw new ImageError(IMAGE_ERROR_CODES.MODEL_ID_REQUIRED)
     }
 
     // 对于具体模型能力的验证，交给具体的适配器实现
@@ -146,11 +131,14 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
     const provider = this.getProvider()
 
     if (provider.requiresApiKey && !config.connectionConfig?.apiKey) {
-      throw new Error(`${provider.name} requires API key`)
+      throw new ImageError(IMAGE_ERROR_CODES.API_KEY_REQUIRED, undefined, { providerName: provider.name })
     }
 
     if (config.providerId !== provider.id) {
-      throw new Error(`Configuration provider mismatch: config.providerId=${config.providerId}, adapter.providerId=${provider.id}`)
+      throw new ImageError(IMAGE_ERROR_CODES.CONFIG_PROVIDER_MISMATCH, undefined, {
+        configProviderId: config.providerId,
+        adapterProviderId: provider.id
+      })
     }
   }
 
@@ -164,7 +152,7 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
     // 验证必需字段
     for (const field of schema.required) {
       if (!(field in connectionConfig)) {
-        throw new Error(`Missing required field: ${field}`)
+        throw new ImageError(IMAGE_ERROR_CODES.CONNECTION_CONFIG_MISSING_FIELD, undefined, { field })
       }
     }
 
@@ -173,7 +161,11 @@ export abstract class AbstractImageProviderAdapter implements IImageProviderAdap
       if (field in connectionConfig) {
         const actualType = typeof connectionConfig[field]
         if (actualType !== expectedType) {
-          throw new Error(`Field ${field} should be ${expectedType}, got ${actualType}`)
+          throw new ImageError(IMAGE_ERROR_CODES.CONNECTION_CONFIG_INVALID_FIELD_TYPE, undefined, {
+            field,
+            expectedType,
+            actualType
+          })
         }
       }
     }

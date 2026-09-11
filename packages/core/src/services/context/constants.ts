@@ -2,8 +2,13 @@
  * 上下文服务相关常量定义
  */
 
+import type { ContextMode } from './types';
+
 // 存储键
 export const CONTEXT_STORE_KEY = 'ctx:store' as const;
+
+// 默认上下文模式
+export const DEFAULT_CONTEXT_MODE: ContextMode = 'system' as const;
 
 // 预定义变量列表（与UI包保持一致）
 // 这些变量名不允许在上下文变量覆盖中使用
@@ -22,7 +27,7 @@ export type PredefinedVariable = typeof PREDEFINED_VARIABLES[number];
 // 默认上下文配置
 export const DEFAULT_CONTEXT_CONFIG = {
   id: 'default',
-  title: '默认上下文',
+  title: 'Default Context',
   version: '1.0.0'
 } as const;
 
@@ -32,7 +37,7 @@ export const CONTEXT_STORE_VERSION = '1.0.0' as const;
 // UI文本常量
 export const CONTEXT_UI_LABELS = {
   /** 默认上下文标题模板 */
-  DEFAULT_TITLE_TEMPLATE: '上下文', // 将与日期组合使用
+  DEFAULT_TITLE_TEMPLATE: 'Context', // 将与日期组合使用
   /** 副本后缀 */
-  DUPLICATE_SUFFIX: '(副本)'
+  DUPLICATE_SUFFIX: ' (Copy)'
 } as const;

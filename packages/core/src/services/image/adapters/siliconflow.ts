@@ -1,4 +1,5 @@
 import { AbstractImageProviderAdapter } from './abstract-adapter'
+import { ImageError } from '../errors'
 import type {
   ImageProvider,
   ImageModel,
@@ -7,6 +8,7 @@ import type {
   ImageModelConfig,
   ImageParameterDefinition
 } from '../types'
+import { IMAGE_ERROR_CODES } from '../../../constants/error-codes'
 
 export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
   protected normalizeBaseUrl(base: string): string {
@@ -17,18 +19,17 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
     return {
       id: 'siliconflow',
       name: 'SiliconFlow',
-      description: 'SiliconFlow 多模型图像生成平台',
+      description: 'SiliconFlow multi-model image generation platform',
       requiresApiKey: true,
       defaultBaseURL: 'https://api.siliconflow.cn/v1',
       supportsDynamicModels: false,
+      apiKeyUrl: 'https://cloud.siliconflow.cn/account/ak',
       connectionSchema: {
         required: ['apiKey'],
-        optional: ['baseURL', 'useVercelProxy', 'useDockerProxy'],
+        optional: ['baseURL'],
         fieldTypes: {
           apiKey: 'string',
-          baseURL: 'string',
-          useVercelProxy: 'boolean',
-          useDockerProxy: 'boolean'
+          baseURL: 'string'
         }
       }
     }
@@ -40,7 +41,7 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
       {
         id: 'Kwai-Kolors/Kolors',
         name: 'Kolors',
-        description: 'Kwai-Kolors 高质量图像生成模型',
+        description: 'Kwai-Kolors high-quality image generation model',
         providerId: 'siliconflow',
         capabilities: {
           text2image: true,
@@ -99,7 +100,7 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
       {
         id: 'Qwen/Qwen-Image',
         name: 'Qwen Image',
-        description: 'Qwen 多模态图像生成模型，支持文本生成和CFG控制',
+        description: 'Qwen multimodal image generation model with text rendering and CFG control support',
         providerId: 'siliconflow',
         capabilities: {
           text2image: true,
@@ -238,7 +239,7 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
 
     // SiliconFlow 特定验证
     if (!connectionConfig.apiKey) {
-      throw new Error('SiliconFlow API key is required')
+      throw new ImageError(IMAGE_ERROR_CODES.API_KEY_REQUIRED, undefined, { providerName: 'SiliconFlow' })
     }
   }
 
@@ -261,7 +262,7 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
       }
     }
 
-    throw new Error(`Unsupported test type: ${testType}`)
+    throw new ImageError(IMAGE_ERROR_CODES.UNSUPPORTED_TEST_TYPE, undefined, { testType })
   }
 
   protected async doGenerate(request: ImageRequest, config: ImageModelConfig): Promise<ImageResult> {
@@ -315,7 +316,28 @@ export class SiliconFlowImageAdapter extends AbstractImageProviderAdapter {
     const url = this.resolveEndpointUrl(config, endpoint)
     const response = await fetch(url, options)
     if (!response.ok) {
-      throw new Error(`SiliconFlow API error: ${response.status} ${response.statusText}`)
+      let bodyText = ''
+      try {
+        bodyText = await response.text()
+      } catch {
+        bodyText = ''
+      }
+
+      const headers: any = (response as any)?.headers
+      const getHeader = (name: string) => (headers?.get ? headers.get(name) : undefined)
+      const requestId =
+        getHeader('x-request-id') ||
+        getHeader('x-siliconflow-request-id') ||
+        getHeader('cf-ray') ||
+        getHeader('x-amzn-requestid') ||
+        getHeader('x-requestid')
+
+      throw new ImageError(
+        IMAGE_ERROR_CODES.GENERATION_FAILED,
+        `SiliconFlow API error: ${response.status} ${response.statusText}` +
+          (requestId ? ` (requestId=${requestId})` : '') +
+          (bodyText ? `\n\n${bodyText}` : '')
+      )
     }
     return await response.json()
   }

@@ -1,23 +1,13 @@
-import { ModelConfig } from './types';
+import { TextModelConfig, TextProvider, TextModel } from './types';
 import { ValidatedCustomModelEnvConfig, scanCustomModelEnvVars } from '../../utils/environment';
-import { createStaticModels } from './static-models';
+import { getDefaultTextModels } from './defaults';
 
 /**
  * 获取静态模型键列表
  * 通过创建临时静态模型配置来动态获取键列表，避免硬编码
  */
 function getStaticModelKeys(): string[] {
-  const tempStaticModels = createStaticModels({
-    OPENAI_API_KEY: '',
-    GEMINI_API_KEY: '',
-    DEEPSEEK_API_KEY: '',
-    SILICONFLOW_API_KEY: '',
-    ZHIPU_API_KEY: '',
-    CUSTOM_API_KEY: '',
-    CUSTOM_API_BASE_URL: '',
-    CUSTOM_API_MODEL: ''
-  });
-
+  const tempStaticModels = getDefaultTextModels();
   return Object.keys(tempStaticModels);
 }
 
@@ -27,8 +17,10 @@ function getStaticModelKeys(): string[] {
  * @returns 格式化的显示名称
  */
 export function generateCustomModelName(suffix: string): string {
-  // 将下划线和连字符替换为空格，并转换为标题格式
+  // 将版本号中的下划线转换为小数点（如 qwen3_5 -> qwen3.5）
+  // 再将其余下划线和连字符替换为空格，并转换为标题格式
   return suffix
+    .replace(/(\d)_(\d)/g, '$1.$2')
     .replace(/[_-]/g, ' ')
     .split(' ')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -36,33 +28,84 @@ export function generateCustomModelName(suffix: string): string {
 }
 
 /**
- * 将已验证的自定义模型环境变量配置转换为ModelConfig
+ * 将已验证的自定义模型环境变量配置转换为 TextModelConfig
  * 输入的配置已通过 validateCustomModelConfig 验证，确保所有必需字段存在
  * @param envConfig 已验证的环境变量配置
- * @returns ModelConfig对象
+ * @returns TextModelConfig对象
  */
-export function generateModelConfig(envConfig: ValidatedCustomModelEnvConfig): ModelConfig {
+export function generateTextModelConfig(envConfig: ValidatedCustomModelEnvConfig): TextModelConfig {
   // 输入配置已通过验证，直接使用（所有必需字段已确保存在）
   const modelName = generateCustomModelName(envConfig.suffix);
 
-  return {
+  // OpenAI 兼容 Provider（所有自定义模型都使用 OpenAI 兼容 API）
+  const customProvider: TextProvider = {
+    id: 'openai-compatible',
+    name: 'OpenAI Compatible (Custom)',
+    description: 'Custom endpoint using an OpenAI-compatible API',
+    requiresApiKey: false,
+    defaultBaseURL: 'http://localhost:11434/v1',
+    supportsDynamicModels: true,
+    connectionSchema: {
+      required: [],
+      optional: ['baseURL', 'apiKey', 'requestStyle'],
+      fieldTypes: {
+        baseURL: 'string',
+        apiKey: 'string',
+        requestStyle: 'string'
+      }
+    }
+  };
+
+  // 自定义模型元数据
+  const customModel: TextModel = {
+    id: envConfig.model,
     name: modelName,
-    baseURL: envConfig.baseURL,
-    models: [envConfig.model],
-    defaultModel: envConfig.model,
-    apiKey: envConfig.apiKey,
+    description: `Custom model: ${envConfig.model}`,
+    providerId: 'openai-compatible',
+    capabilities: {
+      supportsTools: false,
+      supportsReasoning: false,
+      maxContextLength: 4096
+    },
+    parameterDefinitions: [
+      {
+        name: 'temperature',
+        type: 'number',
+        description: 'Sampling temperature',
+        default: 1,
+        min: 0,
+        max: 2
+      }
+    ],
+    defaultParameterValues: {
+      temperature: 1
+    }
+  };
+
+  return {
+    id: `custom_${envConfig.suffix}`,
+    name: modelName,
     enabled: true,
-    provider: 'custom',
-    llmParams: {}
+    providerId: customProvider.id,
+    modelId: customModel.id,
+    providerMeta: customProvider,
+    modelMeta: customModel,
+    connectionConfig: {
+      apiKey: envConfig.apiKey,
+      baseURL: envConfig.baseURL,
+      requestStyle: 'chat_completions',
+      ...(envConfig.customHeaders ? { customHeaders: { ...envConfig.customHeaders } } : {})
+    },
+    paramOverrides: envConfig.params ? { ...envConfig.params } : {}
   };
 }
 
 /**
- * 生成所有动态自定义模型配置
+ * 生成所有动态自定义模型配置（TextModelConfig格式）
  * @returns 动态模型配置映射
  */
-export function generateDynamicModels(): Record<string, ModelConfig> {
-  const dynamicModels: Record<string, ModelConfig> = {};
+export function generateDynamicModels(): Record<string, TextModelConfig> {
+  const dynamicModels: Record<string, TextModelConfig> = {};
 
   try {
     // 获取已验证的自定义模型配置（scanCustomModelEnvVars已完成所有验证）
@@ -80,7 +123,7 @@ export function generateDynamicModels(): Record<string, ModelConfig> {
         }
 
         // 配置已通过验证，直接生成模型配置
-        dynamicModels[modelKey] = generateModelConfig(envConfig);
+        dynamicModels[modelKey] = generateTextModelConfig(envConfig);
         console.log(`[generateDynamicModels] Generated model: ${modelKey} (${dynamicModels[modelKey].name})`);
       } catch (error) {
         console.error(`[generateDynamicModels] Error generating model for ${suffix}:`, error);

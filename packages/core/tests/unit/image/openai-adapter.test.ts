@@ -1,14 +1,20 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { OpenAIImageAdapter } from '../../../src/services/image/adapters/openai'
 import type { ImageRequest, ImageModelConfig } from '../../../src/services/image/types'
+import { IMAGE_ERROR_CODES } from '../../../src/constants/error-codes'
 
 const RUN_REAL_API = process.env.RUN_REAL_API === '1'
 
 describe('OpenAIImageAdapter', () => {
   let adapter: OpenAIImageAdapter
+  const realFetch = global.fetch
 
   beforeEach(() => {
     adapter = new OpenAIImageAdapter()
+  })
+
+  afterEach(() => {
+    global.fetch = realFetch
   })
 
   describe('Provider Information', () => {
@@ -19,7 +25,7 @@ describe('OpenAIImageAdapter', () => {
       expect(provider.name).toBe('OpenAI')
       expect(provider.requiresApiKey).toBe(true)
       expect(provider.defaultBaseURL).toBe('https://api.openai.com/v1')
-      expect(provider.supportsDynamicModels).toBe(false)
+      expect(provider.supportsDynamicModels).toBe(true)
       expect(provider.connectionSchema?.required).toContain('apiKey')
       expect(provider.connectionSchema?.optional).toEqual(expect.arrayContaining(['baseURL']))
       expect(provider.connectionSchema?.fieldTypes.apiKey).toBe('string')
@@ -28,62 +34,121 @@ describe('OpenAIImageAdapter', () => {
   })
 
   describe('Static Models', () => {
-    test('should return static DALL-E models', () => {
+    test('should return GPT Image 2.5 Flare as the static default model', () => {
       const models = adapter.getModels()
 
       expect(Array.isArray(models)).toBe(true)
-      expect(models.length).toBeGreaterThan(0)
+      expect(models.map(model => model.id)).toEqual(['gpt-image-2.5-flare'])
 
-      const dalleModel = models.find(m => m.id.includes('gpt-image-1'))
-      expect(dalleModel).toBeDefined()
-      expect(dalleModel).toMatchObject({
-        id: expect.any(String),
+      const imageModel = models[0]
+      expect(imageModel).toMatchObject({
+        id: 'gpt-image-2.5-flare',
         name: expect.any(String),
         providerId: 'openai',
         capabilities: {
           text2image: true,
           image2image: expect.any(Boolean),
-          multiImage: expect.any(Boolean)
+          multiImage: true
         },
         parameterDefinitions: expect.any(Array)
       })
     })
 
-    test('should include quality and size parameters', () => {
+    test('should expose supported GPT Image 2.5 parameters', () => {
       const models = adapter.getModels()
-      const model = models.find(m => m.id.includes('gpt-image-1'))
+      const model = models.find(m => m.id === 'gpt-image-2.5-flare')
 
       expect(model?.parameterDefinitions).toBeDefined()
       const qualityParam = model?.parameterDefinitions?.find(p => p.name === 'quality')
       const sizeParam = model?.parameterDefinitions?.find(p => p.name === 'size')
+      const backgroundParam = model?.parameterDefinitions?.find(p => p.name === 'background')
 
       expect(qualityParam).toBeDefined()
       expect(qualityParam?.type).toBe('string')
-      expect(qualityParam?.allowedValues).toEqual(expect.arrayContaining(['auto', 'high', 'medium', 'low']))
+      expect(qualityParam?.allowedValues).toEqual(['auto', 'max', 'xhigh', 'high', 'medium', 'low'])
 
       expect(sizeParam).toBeDefined()
-      expect(sizeParam?.allowedValues).toContain('1024x1024')
+      expect(sizeParam?.allowedValues).toEqual([
+        '1024x1024',
+        '1536x1024',
+        '1024x1536',
+        '2048x2048',
+        '2048x1152',
+        '3840x2160',
+        '2160x3840',
+        'auto'
+      ])
+
+      expect(backgroundParam?.allowedValues).toEqual(['auto', 'opaque'])
     })
   })
 
-  // Dynamic models are not supported for OpenAI in current implementation
+  describe('Dynamic Models', () => {
+    test('should prioritize image-like models without filtering non-image models', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          data: [
+            { id: 'gpt-5.1' },
+            { id: 'third-party-text-model', name: 'Text Model' },
+            { id: 'gpt-image-2.5-flare', name: 'GPT Image 2.5 Flare' },
+            { id: 'vendor/custom-image-fast', name: 'Custom Image Fast' }
+          ]
+        })
+      })
+
+      const models = await adapter.getModelsAsync({
+        apiKey: 'test-api-key',
+        baseURL: 'https://compat.example.com'
+      })
+
+      expect(models.map(model => model.id)).toEqual([
+        'gpt-image-2.5-flare',
+        'vendor/custom-image-fast',
+        'gpt-5.1',
+        'third-party-text-model'
+      ])
+      expect(models.find(model => model.id === 'gpt-5.1')).toBeDefined()
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://compat.example.com/v1/models',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-api-key'
+          })
+        })
+      )
+    })
+
+    test('should fall back to static GPT Image 2.5 Flare model when model fetch fails', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({})
+      })
+
+      const models = await adapter.getModelsAsync({ apiKey: 'test-api-key' })
+
+      expect(models.map(model => model.id)).toEqual(['gpt-image-2.5-flare'])
+    })
+  })
 
   // 连接验证已移除
 
   describe('Image Generation', () => {
-    test('should generate image with GPT Image 1', async () => {
+    test('should generate image with GPT Image 2', async () => {
       const config: ImageModelConfig = {
         id: 'test-dalle3-config',
         name: 'Test OpenAI Image Config',
         providerId: 'openai',
-        modelId: 'gpt-image-1',
+        modelId: 'gpt-image-2',
         enabled: true,
         connectionConfig: {
           apiKey: 'test-api-key'
         },
         paramOverrides: {
           quality: 'standard',
-          size: '1024x1024'
+          size: '3840x2160'
         }
       }
 
@@ -117,6 +182,11 @@ describe('OpenAIImageAdapter', () => {
       expect(result.text).toBe('A beautiful landscape with mountains and lakes, painted in a realistic style')
       expect(result.metadata?.configId).toBe(config.id)
       expect(result.metadata?.modelId).toBe(config.modelId)
+
+      const [, options] = (global.fetch as any).mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.size).toBe('3840x2160')
+      expect(body.response_format).toBeUndefined()
     })
 
     test('should generate single image with legacy id allowed', async () => {
@@ -143,7 +213,7 @@ describe('OpenAIImageAdapter', () => {
       const mockResponse = {
         created: Date.now(),
         data: [
-          { b64_json: 'Y2F0LWltYWdlLWJhc2U2NA==' }
+          { url: 'https://example.com/cat.png' }
         ]
       }
 
@@ -155,7 +225,112 @@ describe('OpenAIImageAdapter', () => {
       const result = await adapter.generate(request, config)
 
       expect(result.images).toHaveLength(1)
-      expect(result.images[0].b64).toBeDefined()
+      expect(result.images[0].url).toBe('https://example.com/cat.png')
+    })
+
+    test('should submit single image edits with the single image field', async () => {
+      const config: ImageModelConfig = {
+        id: 'test-openai-edit-config',
+        name: 'Test OpenAI Edit Config',
+        providerId: 'openai',
+        modelId: 'gpt-image-2',
+        enabled: true,
+        connectionConfig: {
+          apiKey: 'test-api-key'
+        },
+        paramOverrides: {
+          size: '1024x1024'
+        }
+      }
+
+      const request: ImageRequest = {
+        prompt: 'make this reference more cinematic',
+        configId: config.id,
+        inputImage: {
+          b64: 'aGVsbG8=',
+          mimeType: 'image/png'
+        },
+        count: 1
+      }
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          data: [{ b64_json: 'ZWRpdA==' }]
+        })
+      })
+
+      await adapter.generate(request, config)
+
+      const [url, options] = (global.fetch as any).mock.calls[0]
+      expect(url).toBe('https://api.openai.com/v1/images/edits')
+      expect(options.body).toBeInstanceOf(FormData)
+
+      const formData = options.body as FormData
+      expect(formData.get('model')).toBe('gpt-image-2')
+      expect(formData.get('prompt')).toBe('make this reference more cinematic')
+      expect(formData.get('size')).toBe('1024x1024')
+      expect(formData.get('n')).toBe('1')
+      expect(formData.get('response_format')).toBeNull()
+      expect(formData.getAll('image')).toHaveLength(1)
+      expect(formData.getAll('image[]')).toHaveLength(0)
+    })
+
+    test('should submit multiple edit images as OpenAI image array fields', async () => {
+      const config: ImageModelConfig = {
+        id: 'test-openai-multi-edit-config',
+        name: 'Test OpenAI Multi Edit Config',
+        providerId: 'openai',
+        modelId: 'gpt-image-2',
+        enabled: true,
+        connectionConfig: {
+          apiKey: 'test-api-key'
+        },
+        paramOverrides: {
+          size: '1024x1024',
+          outputMimeType: 'image/png'
+        }
+      }
+
+      const request: ImageRequest = {
+        prompt: 'combine these two references into one scene',
+        configId: config.id,
+        inputImages: [
+          { b64: 'aGVsbG8=', mimeType: 'image/png' },
+          { b64: 'd29ybGQ=', mimeType: 'image/jpeg' }
+        ],
+        count: 1,
+        paramOverrides: {
+          batch_size: 4,
+          n: 3,
+          outputMimeType: 'image/png'
+        }
+      }
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          data: [{ b64_json: 'bXVsdGktZWRpdA==' }]
+        })
+      })
+
+      const result = await adapter.generate(request, config)
+
+      expect(result.images).toHaveLength(1)
+      const [url, options] = (global.fetch as any).mock.calls[0]
+      expect(url).toBe('https://api.openai.com/v1/images/edits')
+      expect(options.body).toBeInstanceOf(FormData)
+
+      const formData = options.body as FormData
+      expect(formData.get('model')).toBe('gpt-image-2')
+      expect(formData.get('prompt')).toBe('combine these two references into one scene')
+      expect(formData.get('size')).toBe('1024x1024')
+      expect(formData.get('n')).toBe('1')
+      expect(formData.get('batch_size')).toBeNull()
+      expect(formData.get('outputMimeType')).toBeNull()
+      expect(formData.get('response_format')).toBeNull()
+      expect(formData.getAll('image')).toHaveLength(0)
+      expect(formData.getAll('image[]')).toHaveLength(2)
     })
 
     test('should handle content policy violation', async () => {
@@ -212,7 +387,7 @@ describe('OpenAIImageAdapter', () => {
       }
 
       await expect(adapter.generate(request, config))
-        .rejects.toThrow(/requires API key/i)
+        .rejects.toMatchObject({ code: IMAGE_ERROR_CODES.API_KEY_REQUIRED })
     })
   })
 
@@ -245,29 +420,21 @@ describe('OpenAIImageAdapter', () => {
         count: 1
       }
 
-      const startTime = Date.now()
       const result = await adapter.generate(request, config)
-      const endTime = Date.now()
-      const duration = ((endTime - startTime) / 1000).toFixed(1)
-
-      console.log(`OpenAI DALL-E 真实API生成耗时: ${duration}秒`)
 
       expect(result).toBeDefined()
       expect(result.images).toHaveLength(1)
       expect(result.images[0].url).toBeTruthy()
-      expect(result.metadata?.created).toBeGreaterThan(0)
 
       // DALL-E 3 should provide revised prompt
       if (config.modelId === 'dall-e-3') {
         expect(result.text).toBeTruthy()
-        console.log('DALL-E 3 修订后的提示词:', result.text)
       }
 
       // 验证图像 URL 可访问性
       if (result.images[0].url) {
         const response = await fetch(result.images[0].url, { method: 'HEAD' })
         expect(response.ok).toBe(true)
-        console.log('生成的图像 URL 可访问，状态码:', response.status)
       }
     }, 60000) // 60秒超时，OpenAI可能较慢
   })

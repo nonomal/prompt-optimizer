@@ -8,46 +8,56 @@
     </NEmpty>
 
     <!-- 模型列表 -->
-    <NSpace v-else vertical :size="12">
+    <NSpace v-else vertical :size="12" class="image-model-stack">
       <NCard
         v-for="config in configs"
         :key="config.id"
+        size="small"
         hoverable
+        class="image-model-card"
         :style="{
           opacity: config.enabled ? 1 : 0.6
         }"
       >
         <template #header>
           <NSpace justify="space-between" align="center">
-            <NSpace vertical :size="2">
+            <NSpace vertical :size="4" class="image-model-heading">
               <!-- 配置名称行 -->
-              <NSpace align="center">
+              <NSpace align="center" :size="8">
                 <NText strong>{{ config.name || config.id }}</NText>
                 <NTag
                   v-if="!config.enabled"
                   type="warning"
                   size="small"
+                  round
+                  :bordered="false"
                 >
                   {{ t('modelManager.disabled') }}
                 </NTag>
               </NSpace>
               <!-- 标签行：Provider、Model、能力标签合并 -->
-              <NSpace :size="6">
-                <NTag size="small" type="info" :bordered="false">
-                  {{ config.provider?.name || config.providerId }}
+              <NSpace :size="6" class="image-model-tags">
+                <NTag size="small" type="default" round :bordered="false">
+                  {{ providerDisplayName(config) }}
                 </NTag>
-                <NTag size="small" type="primary" :bordered="false">
+                <NTag size="small" type="info" round :bordered="false">
                   {{ config.model?.name || config.modelId }}
                 </NTag>
+                <NTag
+                  v-if="config.provider?.corsRestricted && !isElectronEnv"
+                  size="small"
+                  type="error"
+                  round
+                  :bordered="false"
+                >
+                  {{ t('modelManager.corsRestrictedTag') }}
+                </NTag>
                 <!-- 能力标签移到这里 -->
-                <NTag v-if="config.model?.capabilities?.text2image" size="small" type="success" :bordered="false">
+                <NTag v-if="config.model?.capabilities?.text2image" size="small" type="success" round :bordered="false">
                   {{ t('image.capability.text2image') }}
                 </NTag>
-                <NTag v-if="config.model?.capabilities?.image2image" size="small" type="info" :bordered="false">
+                <NTag v-if="config.model?.capabilities?.image2image" size="small" type="info" round :bordered="false">
                   {{ t('image.capability.image2image') }}
-                </NTag>
-                <NTag v-if="config.model?.capabilities?.highResolution" size="small" type="primary" :bordered="false">
-                  {{ t('image.capability.highResolution') }}
                 </NTag>
               </NSpace>
             </NSpace>
@@ -55,7 +65,7 @@
         </template>
         
         <template #header-extra>
-          <NSpace @click.stop>
+          <NSpace @click.stop :size="4" class="image-model-actions">
             <NButton
               @click="testConnection(config.id)"
               size="small"
@@ -73,13 +83,13 @@
             </NButton>
 
             <!-- 测试结果缩略图 -->
-            <NImage
+            <AppPreviewImage
               v-if="testResults[config.id]?.success && testResults[config.id]?.image"
-              :src="testResults[config.id].image.url || (testResults[config.id].image.b64?.startsWith('data:') ? testResults[config.id].image.b64 : `data:image/png;base64,${testResults[config.id].image.b64}`)"
+              :src="getPreviewImageSrc(config.id) || ''"
               width="24"
               height="24"
               object-fit="cover"
-              :style="{ borderRadius: '4px', border: '1px solid #d9d9d9' }"
+              :style="{ borderRadius: '4px', border: '1px solid var(--n-border-color)' }"
               :preview-disabled="false"
               :alt="t('image.connection.testImagePreview')"
             />
@@ -95,6 +105,20 @@
                 </svg>
               </template>
               <span class="hidden md:inline">{{ t('modelManager.editModel') }}</span>
+            </NButton>
+
+            <NButton
+              @click="cloneConfig(config.id)"
+              size="small"
+              quaternary
+            >
+              <template #icon>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-4 w-4">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </template>
+              <span class="hidden md:inline">{{ t('modelManager.cloneModel') }}</span>
             </NButton>
 
             <NButton
@@ -126,7 +150,7 @@
             >
               <template #icon>
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-4 w-4">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.11 0 0 0-7.5 0" />
                 </svg>
               </template>
               <span class="hidden md:inline">{{ t('common.delete') }}</span>
@@ -139,20 +163,28 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, inject } from 'vue'
+import { ref, onMounted, inject, h } from 'vue'
+
 import { useI18n } from 'vue-i18n'
 import {
-  NSpace, NCard, NText, NTag, NButton, NEmpty, NImage
+  NSpace, NCard, NText, NTag, NButton, NEmpty, useDialog
 } from 'naive-ui'
-import { useImageModelManager } from '../composables/useImageModelManager'
-import { useToast } from '../composables/useToast'
-import type { IImageAdapterRegistry, IImageModelManager, IImageService } from '@prompt-optimizer/core'
+import { useImageModelManager } from '../composables/model/useImageModelManager'
+import { useConfirmDialog } from '../composables/ui/useConfirmDialog'
+import { useToast } from '../composables/ui/useToast'
+import { getI18nErrorMessage } from '../utils/error'
+import { isRunningInElectron, type IImageService, type ImageModel } from '@prompt-optimizer/core'
+import { getProviderDisplayName } from '../utils/provider-display'
+import AppPreviewImage from './media/AppPreviewImage.vue'
 
 const { t } = useI18n()
 const toast = useToast()
+const dialog = useDialog()
+const confirmDialog = useConfirmDialog()
+const isElectronEnv = isRunningInElectron()
 
 // 定义事件
-const emit = defineEmits(['add', 'edit'])
+const emit = defineEmits(['add', 'edit', 'clone'])
 
 // 使用 composable
 const {
@@ -164,8 +196,10 @@ const {
 } = useImageModelManager()
 
 // 注入依赖
-const registry = inject<IImageAdapterRegistry>('imageRegistry') as unknown as IImageAdapterRegistry
-const imageService = inject<IImageService>('imageService') as unknown as IImageService
+const imageService = inject<IImageService>('imageService')
+if (!imageService) {
+  throw new Error('[ImageModelManager] Missing required dependency: imageService')
+}
 
 // 状态管理
 const testingConnections = ref<Record<string, boolean>>({})
@@ -179,16 +213,13 @@ const testResults = ref<Record<string, {
   testType: 'text2image' | 'image2image'
 }>>({})
 
-// 辅助方法（简化后，主要用于连接测试）
-const getProviderName = (config: any) => {
-  return config.provider?.name || config.providerId || '-'
-}
-
 const isTestingConnectionFor = (configId: string) => !!testingConnections.value[configId]
+const providerDisplayName = (config: { provider?: { id?: string; name?: string }; providerId?: string }) =>
+  getProviderDisplayName(config.provider || { id: config.providerId }, t)
 
 // 辅助函数：根据模型能力选择测试类型
-const selectTestType = (model: any): 'text2image' | 'image2image' => {
-  const { text2image, image2image } = model.capabilities || {}
+const selectTestType = (model: ImageModel): 'text2image' | 'image2image' => {
+  const { text2image, image2image } = model.capabilities
 
   if (text2image && !image2image) {
     return 'text2image'  // 只支持文生图
@@ -202,7 +233,17 @@ const selectTestType = (model: any): 'text2image' | 'image2image' => {
     return 'text2image'  // 两种都支持，优先文生图
   }
 
-  throw new Error('模型不支持任何图像生成功能')
+  throw new Error('The model does not support image generation')
+}
+
+const getPreviewImageSrc = (configId: string): string | null => {
+  const img = testResults.value[configId]?.image
+  if (!img) return null
+  if (img.url) return img.url
+  const b64 = img.b64
+  if (!b64) return null
+  if (b64.startsWith('data:')) return b64
+  return `data:image/png;base64,${b64}`
 }
 
 // 操作方法
@@ -214,74 +255,124 @@ const editConfig = (configId: string) => {
   emit('edit', configId)
 }
 
-const testConnection = async (configId: string) => {
-  if (isTestingConnectionFor(configId)) return
+const cloneConfig = (configId: string) => {
+  const source = configs.value.find(c => c.id === configId)
+  if (!source) return
 
   try {
-    testingConnections.value[configId] = true
-
-    // 清除之前的测试结果
-    delete testResults.value[configId]
-
-    const config = configs.value.find(c => c.id === configId)
-    if (!config) throw new Error('Config not found')
-
-    // 获取选中的模型信息
-    if (!config.model) {
-      throw new Error('选中的模型未找到')
+    const cloned = {
+      ...JSON.parse(JSON.stringify(source)),
+      id: '',
+      name: `${source.name || source.id} (Copy)`
     }
-
-    // 根据模型能力确定测试类型
-    const testType = selectTestType(config.model)
-
-    // 通过统一服务执行测试（Electron 下经 IPC 走主进程；Web 下本地执行）
-    const result = await imageService.testConnection(config as any)
-
-    // 测试成功
-    testResults.value[configId] = {
-      success: true,
-      image: result.images[0],
-      testType
-    }
-
-    toast.success(t('image.connection.testSuccess'))
-
+    emit('clone', cloned)
   } catch (error) {
-    console.error('Connection test failed:', error)
-
-    // 记录失败结果
-    testResults.value[configId] = {
-      success: false,
-      testType: 'text2image' // 默认值
-    }
-
-    toast.error(`${t('image.connection.testError')}: ${(error as any)?.message || String(error)}`)
-  } finally {
-    delete testingConnections.value[configId]
+    console.error('Failed to clone model config:', error)
+    toast.error(t('modelManager.cloneFailed'))
   }
 }
 
-const toggleConfig = async (config: any) => {
+const testConnection = async (configId: string) => {
+  if (isTestingConnectionFor(configId)) return
+
+  const config = configs.value.find(c => c.id === configId)
+  if (!config) return
+
+  const runTest = async () => {
+    try {
+      testingConnections.value[configId] = true
+
+      // 清除之前的测试结果
+      delete testResults.value[configId]
+
+      if (!config) throw new Error('Config not found')
+
+      // 获取选中的模型信息
+      if (!config.model) {
+        throw new Error('The selected model could not be found')
+      }
+
+      // 根据模型能力确定测试类型
+      const testType = selectTestType(config.model)
+
+      // 通过统一服务执行测试（Electron 下经 IPC 走主进程；Web 下本地执行）
+      const result = await imageService.testConnection(config)
+
+      // 测试成功
+      testResults.value[configId] = {
+        success: true,
+        image: result.images[0],
+        testType
+      }
+
+      toast.success(t('image.connection.testSuccess'))
+
+    } catch (error) {
+      console.error('Connection test failed:', error)
+
+      // 记录失败结果
+      testResults.value[configId] = {
+        success: false,
+        testType: 'text2image' // 默认值
+      }
+
+      const detail = getI18nErrorMessage(error, t('image.connection.testError'))
+      if (detail === t('image.connection.testError')) {
+        toast.error(detail)
+      } else {
+        toast.error(`${t('image.connection.testError')}: ${detail}`)
+      }
+    } finally {
+      delete testingConnections.value[configId]
+    }
+  }
+
+  if (!isRunningInElectron()) {
+    if (config?.provider?.corsRestricted) {
+      dialog.warning({
+        title: t('modelManager.corsRestrictedTag'),
+        content: () => h('div', { style: 'white-space: pre-line;' }, t('modelManager.corsRestrictedConfirm', { provider: providerDisplayName(config) })),
+        positiveText: t('common.confirm'),
+        negativeText: t('common.cancel'),
+        // Don't block dialog close while the async test runs.
+        onPositiveClick: () => {
+          void runTest()
+        }
+      })
+      return
+    }
+  }
+
+  await runTest()
+}
+
+const toggleConfig = async (config: { id: string; enabled: boolean }) => {
   try {
-    await updateConfig(config.id, { enabled: !config.enabled } as any)
+    await updateConfig(config.id, { enabled: !config.enabled })
     await loadConfigs()
     toast.success(config.enabled ? t('modelManager.disableSuccess') : t('modelManager.enableSuccess'))
   } catch (error) {
-    console.error('切换模型状态失败:', error)
-    toast.error(t('modelManager.toggleFailed', { error: error instanceof Error ? error.message : 'Unknown error' }))
+    console.error('[ImageModelManager] Failed to toggle model status:', error)
+    toast.error(t('modelManager.toggleFailed', { error: getI18nErrorMessage(error, t('common.error')) }))
   }
 }
 
 const deleteConfig = async (configId: string) => {
-  if (confirm(t('modelManager.deleteConfirm'))) {
-    try {
-      await deleteConfigFromManager(configId)
-      await loadConfigs()
-      toast.success(t('modelManager.deleteSuccess'))
-    } catch (error) {
-      console.error('删除模型失败:', error)
-      toast.error(t('modelManager.deleteFailed', { error: error instanceof Error ? error.message : 'Unknown error' }))
-    }
+  const confirmed = await confirmDialog.warning({
+    title: t('common.warning'),
+    content: t('modelManager.deleteConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+  })
+  if (!confirmed) return
+
+  try {
+    await deleteConfigFromManager(configId)
+    await loadConfigs()
+    toast.success(t('modelManager.deleteSuccess'))
+  } catch (error) {
+    console.error('[ImageModelManager] Failed to delete model:', error)
+    toast.error(t('modelManager.deleteFailed', { error: getI18nErrorMessage(error, t('common.error')) }))
   }
 }
 
@@ -290,7 +381,7 @@ onMounted(async () => {
   try {
     await initialize()
   } catch (error) {
-    console.error('初始化图像模型管理器失败:', error)
+    console.error('[ImageModelManager] Failed to initialize:', error)
   }
 })
 
@@ -299,7 +390,9 @@ defineExpose({
   refresh: async () => {
     try {
       await loadConfigs()
-    } catch {}
+    } catch {
+      // 静默处理错误
+    }
   }
 })
 </script>
@@ -307,6 +400,36 @@ defineExpose({
 <style scoped>
 .image-model-list {
   width: 100%;
+}
+
+.image-model-stack {
+  width: 100%;
+}
+
+.image-model-card {
+   border-radius: 16px;
+}
+
+.image-model-card :deep(.n-card-header) {
+  padding-bottom: 10px;
+}
+
+.image-model-card :deep(.n-card__content) {
+  padding-top: 0;
+}
+
+.image-model-heading,
+.image-model-tags {
+  max-width: 100%;
+}
+
+.image-model-tags {
+  flex-wrap: wrap;
+}
+
+.image-model-actions {
+  align-items: center;
+  flex-wrap: nowrap;
 }
 
 /* 文本截断样式 */

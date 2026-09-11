@@ -2,10 +2,16 @@
  * Utility functions for environment detection and configuration.
  */
 
+import { getDefaultEnvVar } from './default-env'
+import { normalizeCustomRequestHeaders, validateCustomRequestHeaders } from './custom-request-headers'
+
+export { DEFAULT_VITE_ENV, getDefaultEnvVar } from './default-env'
+
 // 常量定义
-export const CUSTOM_API_PATTERN = /^VITE_CUSTOM_API_(KEY|BASE_URL|MODEL)_(.+)$/;
+export const CUSTOM_API_PATTERN = /^VITE_CUSTOM_API_(KEY|BASE_URL|MODEL|PARAMS|HEADERS)_(.+)$/;
 export const SUFFIX_PATTERN = /^[a-zA-Z0-9_-]+$/;
 export const MAX_SUFFIX_LENGTH = 50;
+const FORBIDDEN_CUSTOM_PARAM_KEYS = new Set(['model', 'messages', 'stream']);
 
 // 简单的缓存机制
 let cachedCustomModels: Record<string, ValidatedCustomModelEnvConfig> | null = null;
@@ -24,6 +30,10 @@ export interface CustomModelEnvConfig {
   baseURL?: string;
   /** 模型名称（可选） */
   model?: string;
+  /** 额外请求参数（JSON 字符串，可选） */
+  params?: string;
+  /** 自定义请求头（JSON 字符串，可选） */
+  headers?: string;
 }
 
 /**
@@ -39,6 +49,10 @@ export interface ValidatedCustomModelEnvConfig {
   baseURL: string;
   /** 模型名称（已验证存在） */
   model: string;
+  /** 已解析的额外请求参数（可选） */
+  params?: Record<string, unknown>;
+  /** 已解析的自定义请求头（可选） */
+  customHeaders?: Record<string, string>;
 }
 
 /**
@@ -107,19 +121,60 @@ export function validateCustomModelConfig(config: CustomModelEnvConfig): Validat
   return result;
 }
 
-// 由于我们假定Vercel状态是不可变的，我们只需要知道它是否被检查过以及结果。
-interface VercelStatus {
-  checked: boolean;
-  available: boolean;
+function parseCustomModelParams(rawParams: string, suffix: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(rawParams);
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      console.warn(`[scanCustomModelEnvVars] Invalid PARAMS for ${suffix}: must be a JSON object`);
+      return undefined;
+    }
+
+    const sanitizedParams = { ...(parsed as Record<string, unknown>) };
+    const removedKeys: string[] = [];
+
+    FORBIDDEN_CUSTOM_PARAM_KEYS.forEach((key) => {
+      if (key in sanitizedParams) {
+        delete sanitizedParams[key];
+        removedKeys.push(key);
+      }
+    });
+
+    if (removedKeys.length > 0) {
+      console.warn(
+        `[scanCustomModelEnvVars] Ignored forbidden PARAMS keys for ${suffix}: ${removedKeys.join(', ')}`
+      );
+    }
+
+    return sanitizedParams;
+  } catch (error) {
+    console.warn(`[scanCustomModelEnvVars] Failed to parse PARAMS for ${suffix}:`, error);
+    return undefined;
+  }
 }
 
-// 存储Vercel环境检测结果的缓存
-let vercelStatusCache: VercelStatus = {
-  checked: false,
-  available: false,
-};
+function parseCustomModelHeaders(rawHeaders: string, suffix: string): Record<string, string> | undefined {
+  try {
+    const parsed = JSON.parse(rawHeaders);
 
-const PROXY_URL_KEY = 'proxy-url-status';
+    if ((typeof parsed !== 'object' || parsed === null)) {
+      console.warn(`[scanCustomModelEnvVars] Invalid HEADERS for ${suffix}: must be a JSON object or array`);
+      return undefined;
+    }
+
+    const validation = validateCustomRequestHeaders(parsed as any);
+    if (!validation.valid) {
+      const details = validation.errors.map(error => `${error.key} (${error.reason})`).join(', ');
+      console.warn(`[scanCustomModelEnvVars] Ignored invalid HEADERS for ${suffix}: ${details}`);
+      return undefined;
+    }
+
+    return normalizeCustomRequestHeaders(parsed as any);
+  } catch (error) {
+    console.warn(`[scanCustomModelEnvVars] Failed to parse HEADERS for ${suffix}:`, error);
+    return undefined;
+  }
+}
 
 /**
  * 检查是否在浏览器环境中
@@ -129,181 +184,19 @@ export const isBrowser = (): boolean => {
 };
 
 /**
- * 异步检查Vercel API是否可用。
- * 实现"只检查一次"的逻辑，假定状态检查后不会改变。
+ * 检查是否在开发模式
+ * 使用统一的 VITE_LOCAL_DEV 环境变量判断，避免依赖 NODE_ENV、MODE 等内置环境变量
+ * 通过 getEnvVar 动态访问，避免 Vite 编译时内联替换（类似 VITE_APP_PLATFORM 的设计）
+ *
+ * 只有当 VITE_LOCAL_DEV 环境变量显式设置为 'true' 时才认为是开发环境
+ * 支持多种环境：Vite、Node.js、Docker、Electron等
  */
-export async function checkVercelApiAvailability(): Promise<boolean> {
-  // 如果内存缓存中已检查过，直接返回结果。
-  if (vercelStatusCache.checked) {
-    return vercelStatusCache.available;
-  }
-
-  // 兼容Vercel Edge环境
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  // 如果在Electron环境中，不需要检测Vercel API
-  if (isRunningInElectron()) {
-    console.log('[Environment Detection] Skipping Vercel API detection in Electron environment');
-    vercelStatusCache = { available: false, checked: true };
-    return false;
-  }
-
-  // 检查localStorage中是否有持久化的结果（页面刷新后依然有效）
-  const cachedStatus = JSON.parse(localStorage.getItem(PROXY_URL_KEY) || 'null');
-  if (cachedStatus && cachedStatus.checked) {
-    vercelStatusCache = cachedStatus;
-    return vercelStatusCache.available;
-  }
-
-  try {
-    const response = await fetch('/api/vercel-status');
-    
-    // 检查响应是否成功并且内容类型是否为JSON
-    const contentType = response.headers.get('content-type');
-    if (response.ok && contentType && contentType.includes('application/json')) {
-      const data = await response.json();
-      const isAvailable = data.status === 'available' && data.proxySupport === true;
-    
-      // 更新缓存并持久化
-      vercelStatusCache = { available: isAvailable, checked: true };
-      localStorage.setItem(PROXY_URL_KEY, JSON.stringify(vercelStatusCache));
-    
-      return isAvailable;
-    } else {
-      // 与 Docker 逻辑对齐：对失败路径也进行缓存，避免重复请求
-      vercelStatusCache = { available: false, checked: true };
-      localStorage.setItem(PROXY_URL_KEY, JSON.stringify(vercelStatusCache));
-      return false;
-    }
-  } catch (error) {
-    console.log('[Environment Detection] Vercel API detection failed', error);
-  }
-
-  // 检查失败或出错，同样标记为已检查并缓存失败状态
-    vercelStatusCache = { available: false, checked: true };
-  localStorage.setItem(PROXY_URL_KEY, JSON.stringify(vercelStatusCache));
-    return false;
-  }
-
-/**
- * 检查是否在Vercel环境中（同步版本，使用缓存结果）
- */
-export const isVercel = (): boolean => {
-  return vercelStatusCache.checked && vercelStatusCache.available;
-};
-
-/**
- * 重置Vercel状态缓存，主要用于测试
- */
-export const resetVercelStatusCache = (): void => {
-  vercelStatusCache = {
-    checked: false,
-    available: false,
-  };
-  localStorage.removeItem(PROXY_URL_KEY);
-};
-
-// Docker环境检测相关
-interface DockerStatus {
-  checked: boolean;
-  available: boolean;
+export function isDevelopment(): boolean {
+  // 只检查 VITE_LOCAL_DEV 环境变量
+  const localDev = getEnvVar('VITE_LOCAL_DEV');
+  return localDev === 'true';
 }
 
-let dockerStatusCache: DockerStatus = {
-  checked: false,
-  available: false,
-};
-
-const DOCKER_PROXY_URL_KEY = 'docker_proxy_status';
-
-/**
- * 检查Docker API是否可用（简化版）
- */
-export async function checkDockerApiAvailability(): Promise<boolean> {
-  // 如果内存缓存中已检查过，直接返回结果
-  if (dockerStatusCache.checked) {
-    return dockerStatusCache.available;
-  }
-
-  if (typeof window === 'undefined' || isRunningInElectron()) {
-    dockerStatusCache = { available: false, checked: true };
-    return false;
-  }
-
-  // 检查localStorage中是否有持久化的结果
-  const cachedStatus = JSON.parse(localStorage.getItem(DOCKER_PROXY_URL_KEY) || 'null');
-  if (cachedStatus && cachedStatus.checked) {
-    dockerStatusCache = cachedStatus;
-    return dockerStatusCache.available;
-  }
-
-  try {
-    const response = await fetch('/api/docker-status');
-    if (response.ok) {
-      const data = await response.json();
-      const isAvailable = data.status === 'available';
-
-      // 更新缓存并持久化
-      dockerStatusCache = { available: isAvailable, checked: true };
-      localStorage.setItem(DOCKER_PROXY_URL_KEY, JSON.stringify(dockerStatusCache));
-
-      return isAvailable;
-    }
-  } catch (error) {
-    console.log('[Environment Detection] Docker API detection failed', error);
-  }
-
-  // 检查失败或出错，标记为已检查并缓存失败状态
-  dockerStatusCache = { available: false, checked: true };
-  localStorage.setItem(DOCKER_PROXY_URL_KEY, JSON.stringify(dockerStatusCache));
-  return false;
-}
-
-/**
- * 检查是否在Docker环境中（同步版本，使用缓存结果）
- */
-export const isDocker = (): boolean => {
-  return dockerStatusCache.checked && dockerStatusCache.available;
-};
-
-/**
- * 重置Docker状态缓存，主要用于测试
- */
-export const resetDockerStatusCache = (): void => {
-  dockerStatusCache = {
-    checked: false,
-    available: false,
-  };
-  localStorage.removeItem(DOCKER_PROXY_URL_KEY);
-};
-
-/**
- * 获取API代理URL
- * @param baseURL 原始基础URL
- * @param isStream 是否是流式请求
- */
-export const getProxyUrl = (baseURL: string | undefined, isStream: boolean = false): string => {
-  if (!baseURL) {
-    return '';
-  }
-
-  // 获取当前域名作为基础URL
-  let origin = '';
-  if (isBrowser()) {
-    origin = window.location.origin;
-  } else {
-    // 在Node.js环境中（如Electron主进程），使用空字符串作为基础URL
-    // 避免硬编码特定端口，因为不同环境可能使用不同端口
-    origin = '';
-  }
-
-  const proxyEndpoint = isStream ? 'stream' : 'proxy';
-
-  // 返回完整的绝对URL
-  return `${origin}/api/${proxyEndpoint}?targetUrl=${encodeURIComponent(baseURL)}`;
-};
 
 /**
  * 检测是否在Electron环境中运行
@@ -403,7 +296,7 @@ export const getEnvVar = (key: string): string => {
   if (typeof window !== 'undefined' && window.runtime_config) {
     // 移除 VITE_ 前缀以匹配运行时配置中的键名
     const runtimeKey = key.replace('VITE_', '');
-    const value = window.runtime_config[runtimeKey];
+    const value = window.runtime_config[runtimeKey] ?? window.runtime_config[key];
     if (value !== undefined && value !== null) {
       return String(value);
     }
@@ -426,7 +319,11 @@ export const getEnvVar = (key: string): string => {
     // 忽略错误
   }
 
-  // 4. 最后返回空字符串
+  // 4. 产品内建默认值（覆盖 web / extension / desktop 缺省打包场景）
+  const defaultValue = getDefaultEnvVar(key);
+  if (defaultValue) return defaultValue;
+
+  // 5. 最后返回空字符串
   return '';
 };
 
@@ -506,7 +403,9 @@ export function scanCustomModelEnvVars(useCache: boolean = true): Record<string,
           suffix,
           apiKey: undefined,
           baseURL: undefined,
-          model: undefined
+          model: undefined,
+          params: undefined,
+          headers: undefined
         };
       }
 
@@ -521,6 +420,12 @@ export function scanCustomModelEnvVars(useCache: boolean = true): Record<string,
         case 'MODEL':
           customModels[suffix].model = value;
           break;
+        case 'PARAMS':
+          customModels[suffix].params = value;
+          break;
+        case 'HEADERS':
+          customModels[suffix].headers = value;
+          break;
         default:
           console.warn(`[scanCustomModelEnvVars] Unknown config type: ${configType} in ${key}`);
           break;
@@ -534,8 +439,28 @@ export function scanCustomModelEnvVars(useCache: boolean = true): Record<string,
     const validation = validateCustomModelConfig(config);
 
     if (validation.valid) {
-      // 类型断言：验证通过的配置确保所有必需字段存在
-      validModels[suffix] = config as ValidatedCustomModelEnvConfig;
+      const validatedConfig: ValidatedCustomModelEnvConfig = {
+        suffix: config.suffix,
+        apiKey: config.apiKey!,
+        baseURL: config.baseURL!,
+        model: config.model!
+      };
+
+      if (config.params) {
+        const parsedParams = parseCustomModelParams(config.params, suffix);
+        if (parsedParams !== undefined) {
+          validatedConfig.params = parsedParams;
+        }
+      }
+
+      if (config.headers) {
+        const parsedHeaders = parseCustomModelHeaders(config.headers, suffix);
+        if (parsedHeaders !== undefined) {
+          validatedConfig.customHeaders = parsedHeaders;
+        }
+      }
+
+      validModels[suffix] = validatedConfig;
 
       // 输出警告信息
       if (validation.warnings.length > 0) {

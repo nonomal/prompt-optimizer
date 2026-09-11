@@ -1,5 +1,6 @@
 <template>
   <NButton
+    v-bind="attrs"
     :type="buttonType"
     :size="buttonSize"
     :loading="loading"
@@ -20,18 +21,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, useAttrs } from 'vue'
+
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
 
 const { t } = useI18n()
+defineOptions({
+  inheritAttrs: false,
+})
+const attrs = useAttrs()
 
 interface Props {
   icon?: string
   text: string
   loading?: boolean
   loadingText?: string
-  type?: 'default' | 'tertiary' | 'primary' | 'success' | 'info' | 'warning' | 'error' | 'quaternary'
+  type?: 'default' | 'tertiary' | 'primary' | 'success' | 'info' | 'warning' | 'error'
   size?: 'tiny' | 'small' | 'medium' | 'large'
   ghost?: boolean
   round?: boolean

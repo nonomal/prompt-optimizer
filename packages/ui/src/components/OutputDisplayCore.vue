@@ -1,12 +1,13 @@
 <template>
-  <NCard 
+  <NCard
     :bordered="false"
-    class="output-display-core h-full  max-height: 100% "
-    content-style="padding: 0; height: 100%; max-height: 100%;"
+    class="output-display-core h-full"
+    content-style="padding: 0; height: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+    :data-testid="testId"
   >
-    <NFlex vertical style="height: 100%;">
+    <NFlex vertical style="height: 100%; min-height: 0; overflow: hidden;">
       <!-- 统一顶层工具栏 -->
-      <NFlex v-if="hasToolbar" justify="space-between" align="center">
+      <NFlex v-if="hasToolbar" justify="space-between" align="center" style="flex: 0 0 auto;">
         <!-- 左侧：视图控制按钮组 -->
         <NButtonGroup>
           <NButton 
@@ -37,22 +38,67 @@
         </NButtonGroup>
         
         <!-- 右侧：操作按钮 -->
-        <NButtonGroup>
+        <NFlex align="center" :size="6" :wrap="false" class="output-toolbar-actions">
+          <slot name="toolbar-right-extra"></slot>
           <NButton
-            v-if="isActionEnabled('copy')"
-            @click="handleCopy('content')"
+            v-if="isActionEnabled('favorite')"
+            :data-testid="testId ? `${testId}-favorite` : 'output-favorite'"
+            @click="handleFavorite"
             size="small"
             quaternary
             circle
           >
             <template #icon>
               <NIcon>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.03 1.125 0 1.13.094 1.976 1.057 1.976 2.192V7.5M8.25 7.5h7.5M8.25 7.5h-1.5a1.5 1.5 0 00-1.5 1.5v11.25c0 .828.672 1.5 1.5 1.5h10.5a1.5 1.5 0 001.5-1.5V9a1.5 1.5 0 00-1.5-1.5h-1.5" />
-                </svg>
+                <Star />
               </NIcon>
             </template>
           </NButton>
+          <div
+            v-if="isActionEnabled('copy')"
+            class="output-copy-split-button"
+            :class="{ 'is-disabled': !hasContent }"
+            role="group"
+            :aria-label="activeCopyActionTitle"
+          >
+            <NButton
+              :data-testid="testId ? `${testId}-copy-action` : 'output-copy-action'"
+              class="output-copy-split-primary"
+              @click="handlePrimaryCopyAction"
+              size="small"
+              quaternary
+              :disabled="!hasContent"
+              :title="activeCopyActionTitle"
+              :aria-label="activeCopyActionTitle"
+            >
+              <template #icon>
+                <NIcon>
+                  <component :is="activeCopyActionIcon" />
+                </NIcon>
+              </template>
+            </NButton>
+            <NDropdown
+              trigger="click"
+              :options="copyActionOptions"
+              @select="handleCopyActionSelect"
+            >
+              <NButton
+                :data-testid="testId ? `${testId}-copy-action-menu` : 'output-copy-action-menu'"
+                class="output-copy-split-menu"
+                size="small"
+                quaternary
+                :disabled="!hasContent"
+                :title="t('copyOpen.selectAction')"
+                :aria-label="t('copyOpen.selectAction')"
+              >
+                <template #icon>
+                  <NIcon>
+                    <ChevronDown />
+                  </NIcon>
+                </template>
+              </NButton>
+            </NDropdown>
+          </div>
           <NButton
             v-if="isActionEnabled('fullscreen')"
             @click="handleFullscreen"
@@ -68,7 +114,7 @@
               </NIcon>
             </template>
           </NButton>
-        </NButtonGroup>
+        </NFlex>
       </NFlex>
 
       <!-- 推理内容区域 -->
@@ -103,39 +149,62 @@
         </NCollapse>
       </NFlex>
       <!-- 主要内容区域 -->
-      <NFlex vertical style="flex: 1; min-height: 0; max-height: 100%;">
+      <NFlex vertical style="flex: 1; min-height: 0; max-height: 100%; overflow: hidden;">
         <!-- 对比模式 -->
-        <TextDiffUI v-if="internalViewMode === 'diff' && content && originalContent" 
+        <TextDiffUI v-if="internalViewMode === 'diff' && content && originalContent"
           :originalText="originalContent"
           :optimizedText="content"
           :compareResult="compareResult"
           class="w-full"
-          style="height: 100%;"
+          style="height: 100%; min-height: 0; overflow: auto;"
         />
 
         <!-- 原文模式 -->
-        <NInput v-else-if="internalViewMode === 'source'"
-          :value="content"
-          @input="handleSourceInput"
-          :readonly="mode !== 'editable' || streaming"
-          type="textarea"
-          :placeholder="placeholder"
-          :autosize="{ minRows: 10 }"
-          style="height: 100%;"
-        />
+        <template v-if="internalViewMode === 'source'">
+          <!-- 🆕 Pro 模式：使用变量感知输入框 -->
+          <VariableAwareInput
+            v-if="shouldEnableVariables && variableData"
+            :model-value="content"
+            @update:model-value="handleSourceInput"
+            :readonly="mode !== 'editable' || streaming"
+            :placeholder="placeholder"
+            :autosize="true"
+            v-bind="variableData"
+            @variable-extracted="handleVariableExtracted"
+            @add-missing-variable="handleAddMissingVariable"
+            style="height: 100%; min-height: 0;"
+          />
+
+          <!-- Basic/Image 模式：使用普通输入框 -->
+          <NInput
+            v-else
+            :value="content"
+            @input="handleSourceInput"
+            :readonly="mode !== 'editable' || streaming"
+            type="textarea"
+            :placeholder="placeholder"
+            :autosize="{ minRows: 10 }"
+            style="height: 100%; min-height: 0;"
+          />
+        </template>
 
         <!-- 渲染模式（默认） -->
-        <NSpace v-else
-         style="height: 100%;max-height: 100%;"
-         item-style="height: 100%;max-height: 100%;"
-         :align="displayContent ? 'start' : 'center'"
-         :justify="displayContent ? 'start' : 'center'"
+        <NFlex v-else
+          vertical
+          :align="displayContent ? 'stretch' : 'center'"
+          :justify="displayContent ? 'start' : 'center'"
+          style="flex: 1; min-height: 0; overflow: hidden;"
         >
+          <XmlRenderer
+            v-if="displayContent && renderContentType === 'xml'"
+            :content="displayContent"
+            style="flex: 1; min-height: 0; overflow: auto;"
+          />
           <MarkdownRenderer
-            v-if="displayContent"
+            v-else-if="displayContent"
             :content="displayContent"
             :streaming="streaming"
-            style="height: 100%;max-height: 100%;"
+            style="flex: 1; min-height: 0; overflow: auto;"
           />
           <NEmpty
             v-else-if="!loading && !streaming"
@@ -144,7 +213,7 @@
             style="height: 100%;"
           />
           <NText  v-else class="ml-2">{{ placeholder || t('common.loading') }}</NText>
-        </NSpace>
+        </NFlex>
       </NFlex>
   
     </NFlex>
@@ -152,21 +221,54 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onMounted, inject, h, type Ref } from 'vue'
+
 import { useI18n } from 'vue-i18n'
 import {
   NCard, NButton, NButtonGroup, NIcon, NCollapse, NCollapseItem,
-  NInput, NEmpty, NSpin, NScrollbar, NFlex, NText, NSpace
+  NInput, NEmpty, NSpin, NScrollbar, NFlex, NText, NSpace, NDropdown,
+  type DropdownOption
 } from 'naive-ui'
-import { useClipboard } from '../composables/useClipboard'
+import { useToast } from '../composables/ui/useToast'
+import {
+  ChevronDown,
+  Star,
+} from '@vicons/tabler'
+import { useClipboard } from '../composables/ui/useClipboard'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import XmlRenderer from './XmlRenderer.vue'
 import TextDiffUI from './TextDiff.vue'
 import type { CompareResult, ICompareService } from '@prompt-optimizer/core'
+import { VariableAwareInput } from './variable-extraction'
+import { useTemporaryVariables } from '../composables/variable/useTemporaryVariables'
+import { useVariableAwareInputBridge } from '../composables/variable/useVariableAwareInputBridge'
+import { useVariableManager } from '../composables/prompt/useVariableManager'
+import type { AppServices } from '../types/services'
+import { router as routerInstance } from '../router'
+import { isValidXmlContent } from '../utils/xml-renderer'
+import {
+  buildCopyOpenActionUrl,
+  COPY_OPEN_ACTIONS,
+  DEFAULT_COPY_OPEN_ACTION_ID,
+  getCopyOpenAction,
+  readCopyOpenActionFromSession,
+  writeCopyOpenActionToSession,
+  type CopyOpenActionId,
+} from '../utils/copy-open-action'
+import { copyOpenActionIconMap } from '../utils/copy-open-icons'
+import { openExternalUrl } from '../utils/open-external-url'
 
-type ActionName = 'fullscreen' | 'diff' | 'copy' | 'edit' | 'reasoning'
+type ActionName = 'fullscreen' | 'diff' | 'copy' | 'edit' | 'reasoning' | 'favorite'
 
 const { t } = useI18n()
 const { copyText } = useClipboard()
+
+const message = useToast()
+
+// 🆕 注入 services（用于变量管理）
+const services = inject<Ref<AppServices | null>>('services') ?? ref<AppServices | null>(null)
+
+// 移除收藏状态管理(改由父组件处理)
 
 // 组件 Props
 interface Props {
@@ -174,6 +276,9 @@ interface Props {
   content?: string
   originalContent?: string
   reasoning?: string
+
+  /** E2E/测试定位用的 data-testid（挂在组件根节点） */
+  testId?: string
   
   // 显示模式
   mode: 'readonly' | 'editable'
@@ -191,19 +296,22 @@ interface Props {
   streaming?: boolean
   
   // 服务
-  compareService: ICompareService
+  compareService?: ICompareService
 }
 
 const props = withDefaults(defineProps<Props>(), {
   content: '',
   originalContent: '',
   reasoning: '',
+  testId: undefined,
   mode: 'readonly',
   reasoningMode: 'auto',
-  enabledActions: () => ['fullscreen', 'diff', 'copy', 'edit', 'reasoning'],
+  enabledActions: () => ['fullscreen', 'diff', 'copy', 'edit', 'reasoning', 'favorite'],
   height: '100%',
   placeholder: ''
 })
+
+const testId = computed(() => props.testId || undefined)
 
 // 事件定义
 const emit = defineEmits<{
@@ -215,15 +323,57 @@ const emit = defineEmits<{
   'edit-end': []
   'reasoning-toggle': [expanded: boolean]
   'view-change': [mode: 'base' | 'diff']
+  'save-favorite': [data: { content: string; originalContent?: string }]
 }>()
 
+// 🆕 变量管理功能（Pro / Image 模式）
+// 当前架构以路由为单一真源；不要依赖 legacy 的 Preference-based functionMode。
+const routeFunctionMode = computed<'basic' | 'pro' | 'image'>(() => {
+  const path = routerInstance.currentRoute.value.path || ''
+  if (path.startsWith('/pro')) return 'pro'
+  if (path.startsWith('/image')) return 'image'
+  return 'basic'
+})
+
+const shouldEnableVariables = computed(() => routeFunctionMode.value === 'pro' || routeFunctionMode.value === 'image')
+
+// ==================== 变量管理 Composables ====================
+// 临时变量管理器（全局单例）
+const tempVars = useTemporaryVariables()
+
+// ✅ 无条件调用，composable 内部会等待 services.preferenceService 准备就绪
+const globalVarsManager = useVariableManager(services)
+
+const {
+  variableInputData: variableData,
+  handleVariableExtracted,
+  handleAddMissingVariable,
+} = useVariableAwareInputBridge({
+  enabled: shouldEnableVariables,
+  isReady: globalVarsManager.isReady,
+  globalVariables: globalVarsManager.customVariables,
+  temporaryVariables: tempVars.temporaryVariables,
+  allVariables: globalVarsManager.allVariables,
+  saveGlobalVariable: (name, value) => globalVarsManager.addVariable(name, value),
+  saveTemporaryVariable: (name, value) => tempVars.setVariable(name, value),
+  logPrefix: 'OutputDisplayCore',
+})
+
 // 内部状态
-const reasoningContentRef = ref<HTMLDivElement | null>(null)
+type ScrollbarLike = {
+  scrollTo: (options: { top: number; behavior?: ScrollBehavior }) => void
+}
+
+const reasoningContentRef = ref<ScrollbarLike | null>(null)
 const userHasManuallyToggledReasoning = ref(false)
 
 // 新的视图状态机
 const internalViewMode = ref<'render' | 'source' | 'diff'>('render')
-const compareResult = ref<CompareResult | undefined>()
+const EMPTY_COMPARE_RESULT: CompareResult = {
+  fragments: [],
+  summary: { additions: 0, deletions: 0, unchanged: 0 },
+}
+const compareResult = ref<CompareResult>(EMPTY_COMPARE_RESULT)
 
 // 推理折叠面板状态
 const reasoningExpandedNames = ref<string[]>([])
@@ -237,6 +387,19 @@ const hasToolbar = computed(() =>
 // 计算属性
 const displayContent = computed(() => (props.content || '').trim())
 const displayReasoning = computed(() => (props.reasoning || '').trim())
+const copyActionWorkspacePath = computed(() => routerInstance.currentRoute.value.path || '/')
+const activeCopyActionId = ref<CopyOpenActionId>(
+  readCopyOpenActionFromSession(copyActionWorkspacePath.value),
+)
+
+const renderContentType = computed<'markdown' | 'xml'>(() => {
+  if (!displayContent.value) return 'markdown'
+
+  // Avoid format jumps while text is still being streamed.
+  if (props.streaming) return 'markdown'
+
+  return isValidXmlContent(displayContent.value) ? 'xml' : 'markdown'
+})
 
 const hasContent = computed(() => !!displayContent.value)
 const hasReasoning = computed(() => !!displayReasoning.value)
@@ -251,6 +414,33 @@ const shouldShowReasoning = computed(() => {
   if (props.reasoningMode === 'show') return true
   return hasReasoning.value
 })
+
+const getCopyActionPlatformLabel = (actionId: CopyOpenActionId): string => {
+  const platform = getCopyOpenAction(actionId).platform
+  return platform ? t(`copyOpen.platforms.${actionId}`) : ''
+}
+
+const activeCopyActionIcon = computed(() => copyOpenActionIconMap[activeCopyActionId.value])
+
+const activeCopyActionTitle = computed(() => {
+  if (activeCopyActionId.value === DEFAULT_COPY_OPEN_ACTION_ID) {
+    return t('common.copy')
+  }
+
+  return t('copyOpen.copyAndOpen', {
+    platform: getCopyActionPlatformLabel(activeCopyActionId.value),
+  })
+})
+
+const copyActionOptions = computed<DropdownOption[]>(() =>
+  COPY_OPEN_ACTIONS.map((action) => ({
+    key: action.id,
+    label: action.id === 'copy'
+      ? t('copyOpen.copyOnly')
+      : t('copyOpen.copyAndOpen', { platform: getCopyActionPlatformLabel(action.id) }),
+    icon: () => h(NIcon, null, { default: () => h(copyOpenActionIconMap[action.id]) }),
+  })),
+)
 
 // 推理展开/折叠状态的计算属性
 const isReasoningExpanded = computed({
@@ -270,30 +460,49 @@ const handleSourceInput = (value: string) => {
   emit('update:content', value)
 }
 
-// 复制功能
-const handleCopy = (type: 'content' | 'reasoning' | 'all') => {
-  let textToCopy = ''
-  const emitType: 'content' | 'reasoning' | 'all' = type
-  
-  switch (type) {
-    case 'content':
-      textToCopy = displayContent.value
-      break
-    case 'reasoning':
-      textToCopy = displayReasoning.value
-      break
-    case 'all':
-      textToCopy = [
-        displayReasoning.value && `推理过程：\n${displayReasoning.value}`,
-        `主要内容：\n${displayContent.value}`
-      ].filter(Boolean).join('\n\n')
-      break
-  }
-  
-  if (textToCopy) {
-    copyText(textToCopy)
+const copyDisplayText = async (
+  textToCopy: string,
+  emitType: 'content' | 'reasoning' | 'all',
+): Promise<boolean> => {
+  if (!textToCopy) return false
+
+  try {
+    await copyText(textToCopy)
     emit('copy', textToCopy, emitType)
+    return true
+  } catch (error) {
+    console.error('[OutputDisplayCore] Failed to copy content:', error)
+    message.error(t('common.copyFailed'))
+    return false
   }
+}
+
+const handlePrimaryCopyAction = async () => {
+  const textToCopy = displayContent.value
+  const copied = await copyDisplayText(textToCopy, 'content')
+  if (!copied || activeCopyActionId.value === DEFAULT_COPY_OPEN_ACTION_ID) return
+
+  const url = buildCopyOpenActionUrl(activeCopyActionId.value)
+  if (!url) return
+
+  try {
+    const opened = await openExternalUrl(url, { logPrefix: 'OutputDisplayCore' })
+    if (!opened) {
+      message.error(t('copyOpen.openFailed'))
+    }
+  } catch (error) {
+    console.error('[OutputDisplayCore] Failed to open external AI platform:', error)
+    message.error(t('copyOpen.openFailed'))
+  }
+}
+
+const handleCopyActionSelect = async (key: string | number) => {
+  const selected = COPY_OPEN_ACTIONS.find((action) => action.id === key)
+  if (!selected) return
+
+  activeCopyActionId.value = selected.id
+  writeCopyOpenActionToSession(copyActionWorkspacePath.value, selected.id)
+  await handlePrimaryCopyAction()
 }
 
 // 全屏功能
@@ -305,20 +514,10 @@ const scrollReasoningToBottom = () => {
   if (reasoningContentRef.value) {
     nextTick(() => {
       if (reasoningContentRef.value) {
-        // 使用 Naive UI NScrollbar 的正确 API
-        const scrollContainer = reasoningContentRef.value.$el || reasoningContentRef.value
-        if (scrollContainer && scrollContainer.scrollTo) {
-          scrollContainer.scrollTo({
-            top: scrollContainer.scrollHeight,
-            behavior: 'smooth'
-          })
-        } else if (reasoningContentRef.value.scrollTo) {
-          // 直接调用 NScrollbar 实例的 scrollTo 方法
-          reasoningContentRef.value.scrollTo({
-            top: 999999,  // 滚动到底部
-            behavior: 'smooth'
-          })
-        }
+        reasoningContentRef.value.scrollTo({
+          top: 999999, // 滚动到底部
+          behavior: 'smooth'
+        })
       }
     })
   }
@@ -328,19 +527,20 @@ const scrollReasoningToBottom = () => {
 const updateCompareResult = async () => {
   if (internalViewMode.value === 'diff' && props.originalContent && props.content) {
     try {
-      if (!props.compareService) {
-        throw new Error('CompareService is required but not provided')
-      }
-      compareResult.value = await props.compareService.compareTexts(
+      const compareService = props.compareService ?? services.value?.compareService
+      if (!compareService) throw new Error('CompareService not available')
+
+      compareResult.value = await compareService.compareTexts(
         props.originalContent,
         props.content
       )
     } catch (error) {
-      console.error('Error calculating diff:', error)
-      throw error
+      console.error('[OutputDisplayCore] Error calculating diff:', error)
+      message.warning(t('toast.warning.compareFailed'))
+      compareResult.value = EMPTY_COMPARE_RESULT
     }
   } else {
-    compareResult.value = undefined
+    compareResult.value = EMPTY_COMPARE_RESULT
   }
 }
 
@@ -400,6 +600,10 @@ watch(() => props.content, (newContent, oldContent) => {
   }
 })
 
+watch(copyActionWorkspacePath, (workspacePath) => {
+  activeCopyActionId.value = readCopyOpenActionFromSession(workspacePath)
+})
+
 // 监听推理折叠状态变化
 watch(reasoningExpandedNames, (newNames) => {
   const expanded = newNames.includes('reasoning')
@@ -415,6 +619,10 @@ const resetReasoningState = (initialState: boolean) => {
 }
 
 const forceExitEditing = () => {
+  // In Pro/Image (variable-enabled) workspaces, keep source view as the default
+  // to preserve variable highlighting instead of flipping back to Markdown.
+  if (shouldEnableVariables.value) return
+
   internalViewMode.value = 'render'
 }
 
@@ -422,6 +630,104 @@ const forceRefreshContent = () => {
   // V2版本中这个方法不再需要，但保留以确保向后兼容
 }
 
+// 收藏相关方法 - 触发保存对话框而不是直接保存
+const handleFavorite = () => {
+  if (!props.content) {
+    message.warning(t('toast.error.noContentToSave'));
+    return;
+  }
+
+  // 触发保存收藏事件,由父组件打开保存对话框
+  emit('save-favorite', {
+    content: props.content,
+    originalContent: props.originalContent
+  });
+};
+
+// 组件挂载时设置初始视图模式
+onMounted(() => {
+  // ⚠️ 不在此处初始化 functionMode
+  // 原因：useFunctionMode 是全局单例，不应由单个组件控制初始化时机
+  // - 如果 services 未就绪，初始化会失败但仍标记为已完成，导致永久卡在 'basic'
+  // - 应该在应用级别统一初始化（如 App.vue）
+  // - functionMode 有默认值 'basic'，可以正常工作
+
+  // 如果是可编辑模式，默认显示原文
+  if (props.mode === 'editable') {
+    internalViewMode.value = 'source';
+  }
+});
+
+// 监听 mode 变化，自动切换视图模式
+watch(() => props.mode, (newMode) => {
+  if (newMode === 'editable' && internalViewMode.value === 'render') {
+    internalViewMode.value = 'source';
+  } else if (newMode === 'readonly' && internalViewMode.value === 'source') {
+    internalViewMode.value = 'render';
+  }
+});
+
 defineExpose({ resetReasoningState, forceRefreshContent, forceExitEditing })
 </script>
 
+<style scoped>
+.output-toolbar-actions {
+  flex-shrink: 0;
+}
+
+.output-copy-split-button {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  overflow: hidden;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+  background: transparent;
+}
+
+.output-copy-split-button:not(.is-disabled):hover {
+  border-color: color-mix(in srgb, currentColor 28%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.output-copy-split-button.is-disabled {
+  opacity: 0.5;
+}
+
+.output-copy-split-button :deep(.n-button.output-copy-split-primary),
+.output-copy-split-button :deep(.n-button.output-copy-split-menu) {
+  height: 26px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.output-copy-split-button :deep(.n-button.output-copy-split-primary) {
+  min-width: 29px;
+  width: 29px;
+  padding: 0 6px;
+}
+
+.output-copy-split-button :deep(.n-button.output-copy-split-menu) {
+  position: relative;
+  min-width: 21px;
+  width: 21px;
+  padding: 0 4px;
+}
+
+.output-copy-split-button :deep(.n-button.output-copy-split-menu)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.output-copy-split-button:not(.is-disabled) :deep(.n-button:hover) {
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+</style>

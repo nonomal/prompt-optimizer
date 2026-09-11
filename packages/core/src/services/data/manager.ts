@@ -1,8 +1,16 @@
 import { IHistoryManager } from '../history/types';
 import { IModelManager } from '../model/types';
+import type { IImageModelManager } from '../image/types';
 import { ITemplateManager } from '../template/types';
 import { IPreferenceService } from '../preference/types';
 import { ContextRepo } from '../context/types';
+import {
+  DataExportFailedError,
+  DataImportPartialFailedError,
+  DataInvalidFormatError,
+  DataInvalidJsonError,
+} from './errors';
+import { stripErrorCodeMarkers, toErrorWithCode } from '../../utils/error';
 
 /**
  * 数据导入导出管理器
@@ -34,6 +42,7 @@ export interface IDataManager {
 
 export class DataManager implements IDataManager {
   private modelManager: IModelManager;
+  private imageModelManager?: IImageModelManager;
   private templateManager: ITemplateManager;
   private historyManager: IHistoryManager;
   private preferenceService: IPreferenceService;
@@ -44,9 +53,11 @@ export class DataManager implements IDataManager {
     templateManager: ITemplateManager,
     historyManager: IHistoryManager,
     preferenceService: IPreferenceService,
-    contextRepo: ContextRepo
+    contextRepo: ContextRepo,
+    imageModelManager?: IImageModelManager
   ) {
     this.modelManager = modelManager;
+    this.imageModelManager = imageModelManager;
     this.templateManager = templateManager;
     this.historyManager = historyManager;
     this.preferenceService = preferenceService;
@@ -60,12 +71,18 @@ export class DataManager implements IDataManager {
       // 使用各服务的exportData接口，使用固定的键名保持兼容性
       data['history'] = await this.historyManager.exportData();
       data['models'] = await this.modelManager.exportData();
+      if (this.imageModelManager) {
+        data['imageModels'] = await this.imageModelManager.exportData();
+      }
       data['userTemplates'] = await this.templateManager.exportData();
       data['userSettings'] = await this.preferenceService.exportData();
       data['contexts'] = await this.contextRepo.exportData();
     } catch (error) {
-      console.error('导出数据失败:', error);
-      throw error;
+      console.error('Failed to export data:', error);
+      if (typeof (error as any)?.code === 'string') {
+        throw toErrorWithCode(error)
+      }
+      throw new DataExportFailedError(error instanceof Error ? error.message : String(error))
     }
 
     const exportFormat = {
@@ -82,11 +99,11 @@ export class DataManager implements IDataManager {
     try {
       exportData = JSON.parse(dataString);
     } catch (error) {
-      throw new Error('Invalid data format: failed to parse JSON');
+      throw new DataInvalidJsonError(error instanceof Error ? error.message : String(error))
     }
 
     if (!exportData || typeof exportData !== 'object' || Array.isArray(exportData)) {
-      throw new Error('Invalid data format: data must be an object');
+      throw new DataInvalidFormatError('Data must be an object')
     }
 
     // Support both old and new format for backward compatibility
@@ -95,16 +112,16 @@ export class DataManager implements IDataManager {
     // New format: { version: 1, data: { ... } }
     if (exportData.version) {
       if (!exportData.data || typeof exportData.data !== 'object' || Array.isArray(exportData.data)) {
-        throw new Error('Invalid data format: "data" property is missing or not an object');
+        throw new DataInvalidFormatError('"data" property is missing or not an object')
       }
       dataToImport = exportData.data;
     }
     // Old format: direct data object { history: [...], models: [...], ... }
-    else if (exportData.history || exportData.models || exportData.userTemplates || exportData.userSettings || exportData.contexts) {
+    else if (exportData.history || exportData.models || exportData.imageModels || exportData.userTemplates || exportData.userSettings || exportData.contexts) {
       dataToImport = exportData;
     }
     else {
-      throw new Error('Invalid data format: unrecognized data structure');
+      throw new DataInvalidFormatError('Unrecognized data structure')
     }
 
     const errors: string[] = [];
@@ -113,6 +130,7 @@ export class DataManager implements IDataManager {
     const serviceMap = [
       { service: this.historyManager, dataKey: 'history' },
       { service: this.modelManager, dataKey: 'models' },
+      ...(this.imageModelManager ? [{ service: this.imageModelManager, dataKey: 'imageModels' }] : []),
       { service: this.templateManager, dataKey: 'userTemplates' },
       { service: this.preferenceService, dataKey: 'userSettings' },
       { service: this.contextRepo, dataKey: 'contexts' }
@@ -124,7 +142,11 @@ export class DataManager implements IDataManager {
           await service.importData(dataToImport[dataKey]);
           console.log(`Successfully imported ${dataKey}`);
         } catch (error) {
-          const errorMessage = `Failed to import ${dataKey}: ${error instanceof Error ? error.message : String(error)}`;
+          // Nested structured errors may contain markers outside the leading position.
+          const detail = stripErrorCodeMarkers(
+            error instanceof Error ? error.message : String(error)
+          );
+          const errorMessage = `Failed to import ${dataKey}: ${detail}`;
           errors.push(errorMessage);
           console.error(errorMessage, error);
         }
@@ -132,7 +154,7 @@ export class DataManager implements IDataManager {
     }
 
     if (errors.length > 0) {
-      throw new Error(`Import completed with ${errors.length} errors: ${errors.join('; ')}`);
+      throw new DataImportPartialFailedError(errors.length, errors.join('; '))
     }
   }
 }
@@ -151,7 +173,8 @@ export function createDataManager(
   templateManager: ITemplateManager,
   historyManager: IHistoryManager,
   preferenceService: IPreferenceService,
-  contextRepo: ContextRepo
+  contextRepo: ContextRepo,
+  imageModelManager?: IImageModelManager
 ): DataManager {
-  return new DataManager(modelManager, templateManager, historyManager, preferenceService, contextRepo);
+  return new DataManager(modelManager, templateManager, historyManager, preferenceService, contextRepo, imageModelManager);
 }

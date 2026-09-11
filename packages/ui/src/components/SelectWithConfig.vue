@@ -13,6 +13,7 @@
           <NText depth="3">{{ emptyText || t('model.select.noAvailableModels') }}</NText>
           <NButton
             v-if="shouldShowEmptyConfigCTA"
+            data-testid="select-empty-config-action"
             type="tertiary"
             size="small"
             ghost
@@ -43,16 +44,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, useAttrs } from 'vue'
+import { computed, h, useAttrs, toValue, type ComputedRef, type Ref } from 'vue'
+
 import { useI18n } from 'vue-i18n'
-import { NSelect, NSpace, NButton, NText } from 'naive-ui'
+import { NSelect, NSpace, NButton, NText, type SelectOption as NaiveSelectOption, type SelectFilter } from 'naive-ui'
+
+import type { SelectOption as StandardSelectOption } from '../types/select-options'
+
+type SelectOption = StandardSelectOption<unknown>
+
+type OptionsSource = SelectOption[] | Ref<SelectOption[]> | ComputedRef<SelectOption[]>
 
 interface Props {
-  modelValue: any
-  options: any[]
-  getPrimary: (opt: any) => string
-  getSecondary?: (opt: any) => string
-  getValue: (opt: any) => string | number
+  // Allow null so callers can intentionally clear selection.
+  modelValue: string | number | Array<string | number> | null
+  options: OptionsSource
+  getPrimary: (opt: SelectOption) => string
+  getSecondary?: (opt: SelectOption) => string
+  getValue: (opt: SelectOption) => string | number
   selectedTooltip?: boolean
   showConfigAction?: boolean
   showEmptyConfigCTA?: boolean
@@ -74,11 +83,11 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: any]
-  'config': [payload?: any]
+  'update:modelValue': [value: string | number | Array<string | number> | null]
+  'config': [payload?: Record<string, unknown>]
 }>()
 
-const attrs = useAttrs() as Record<string, any>
+const attrs = useAttrs() as Record<string, unknown>
 const { t } = useI18n()
 
 // 检测是否有 config 事件处理器 - 始终显示配置按钮确保功能可用
@@ -88,7 +97,9 @@ const shouldShowEmptyConfigCTA = computed(() => !!props.showEmptyConfigCTA)
 
 // 将外部原始 options 转换为 NSelect 可识别的选项，label 为两行结构
 const mappedOptions = computed(() => {
-  return (props.options || []).map((opt: any) => {
+  // 使用 toValue 解包可能的 Ref，兼容直接传递 ref 或数组
+  const optionsArray = toValue(props.options) || []
+  return optionsArray.map((opt: SelectOption) => {
     const primary = props.getPrimary(opt) || ''
     const secondary = props.getSecondary ? (props.getSecondary(opt) || '') : ''
     const value = props.getValue(opt)
@@ -103,7 +114,7 @@ const mappedOptions = computed(() => {
 })
 
 // 使用 Naive UI 官方的 render-label 自定义选项渲染
-const renderOptionLabel = (option: any) => {
+const renderOptionLabel = (option: { primary: string; secondary: string; raw: SelectOption }) => {
   const primary = option?.primary || ''
   const secondary = option?.secondary || ''
   const title = props.selectedTooltip && secondary ? `${primary} · ${secondary}` : undefined
@@ -114,7 +125,12 @@ const renderOptionLabel = (option: any) => {
 }
 
 // 多选 tag 渲染
-const renderSelectedTag = ({ option }: { option: any }) => {
+const renderSelectedTag = ({
+  option
+}: {
+  option: NaiveSelectOption & { primary?: string; secondary?: string }
+  handleClose: () => void
+}) => {
   const title = props.selectedTooltip && option?.secondary ? `${option.primary} · ${option.secondary}` : undefined
   return h('span', { title }, option?.primary || '')
 }
@@ -122,36 +138,50 @@ const renderSelectedTag = ({ option }: { option: any }) => {
 // 透传属性，若无自定义 filter，则提供默认过滤（匹配主/副文本）
 const forwardedAttrs = computed(() => {
   const hasCustomFilter = Object.prototype.hasOwnProperty.call(attrs, 'filter')
-  const internalFilter = (pattern: string, option: any) => {
+  const internalFilter = (pattern: string, option: { primary: string; secondary: string }) => {
     const p = (pattern || '').toLowerCase()
     return (
       (option?.primary || '').toLowerCase().includes(p) ||
       (option?.secondary || '').toLowerCase().includes(p)
     )
   }
-  const { ['onUpdate:value']: _omitUpdate, multiple: attrsMultiple, class: rootClass, ['menu-props']: menuPropsKebab, menuProps, ...rest } = attrs as any
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { ['onUpdate:value']: _, multiple: attrsMultiple, class: rootClass, ['menu-props']: menuPropsKebab, menuProps, style: rootStyle, ...rest } = attrs as Record<string, unknown>
+
+  const normalizedMultiple =
+    typeof attrsMultiple === 'boolean'
+      ? attrsMultiple
+      : attrsMultiple != null
+        ? true
+        : props.multiple
 
   // 规范：通过 class & menu-props.class 注入样式作用域，避免使用 :deep
   const mergedRootClass = [rootClass, 'swc-select'].filter(Boolean).join(' ')
-  const mp = (menuPropsKebab || menuProps || {}) as Record<string, any>
+  const mp = (menuPropsKebab || menuProps || {}) as Record<string, unknown>
   const mergedMenuClass = [mp.class, 'swc-select-menu'].filter(Boolean).join(' ')
   const normalizedMenuProps = { ...mp, class: mergedMenuClass }
 
+  const customFilter = (attrs as Record<string, unknown>).filter
+  const resolvedFilter: SelectFilter = hasCustomFilter && typeof customFilter === 'function'
+    ? (customFilter as SelectFilter)
+    : (internalFilter as unknown as SelectFilter)
+ 
   return {
     filterable: true,
-    multiple: attrsMultiple ?? props.multiple,
+    multiple: normalizedMultiple,
     class: mergedRootClass,
+    style: { minWidth: '160px', ...(rootStyle as Record<string, unknown> || {}) },
     menuProps: normalizedMenuProps,
     ...rest,
-    filter: hasCustomFilter ? (attrs as any).filter : internalFilter
+    filter: resolvedFilter
   }
 })
 
 const normalizedValue = computed(() => props.modelValue)
 
-const onUpdateValue = (val: any) => {
+const onUpdateValue = (val: string | number | Array<string | number> | null) => {
   emit('update:modelValue', val)
-  const cb = (attrs as any)['onUpdate:value']
+  const cb = (attrs as Record<string, unknown>)['onUpdate:value']
   if (typeof cb === 'function') cb(val)
 }
 
